@@ -1,0 +1,20 @@
+{
+    "name": "VectorKit.Editor",
+    "rootNamespace": "VectorKit.Editor",
+    "references": [
+        "VectorKit.Runtime",
+        "UnityEngine.UI",
+        "Unity.ugui"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

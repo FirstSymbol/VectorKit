@@ -1,0 +1,518 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Xml.Linq;
+using UnityEngine;
+
+namespace VectorKit.Runtime
+{
+    // Parses SVG files into a flat list of VectorShapeData records.
+    // Handles <path>, <rect>, <circle>, <ellipse>, <line>, <polyline>, <polygon>.
+    // SVG Y-axis is flipped to match Unity's coordinate system.
+    internal static class SVGParser
+    {
+        public class ShapeData
+        {
+            public string           Id;
+            public ShapeDefinition  Shape;
+            public List<FillLayer>  Fills   = new List<FillLayer>();
+            public List<StrokeLayer> Strokes = new List<StrokeLayer>();
+            public Vector2          Size;
+            public Vector2          Position;
+        }
+
+        public class Document
+        {
+            public Vector2           ViewBox;
+            public List<ShapeData>   Shapes = new List<ShapeData>();
+        }
+
+        private static readonly XNamespace SVG = "http://www.w3.org/2000/svg";
+
+        public static Document Parse(string svgText)
+        {
+            var doc = new Document();
+            XDocument xdoc;
+            try { xdoc = XDocument.Parse(svgText); }
+            catch (Exception e) { Debug.LogWarning($"[VectorKit] SVG parse error: {e.Message}"); return doc; }
+
+            var root = xdoc.Root;
+            if (root == null) return doc;
+
+            doc.ViewBox = ParseViewBox(root.Attribute("viewBox")?.Value
+                       ?? root.Attribute("width")?.Value + " " + root.Attribute("height")?.Value);
+
+            ParseChildren(root, doc, Matrix2x3.Identity);
+            return doc;
+        }
+
+        private static void ParseChildren(XElement parent, Document doc, Matrix2x3 xf)
+        {
+            foreach (var el in parent.Elements())
+            {
+                var localXf = xf * ParseTransform(el.Attribute("transform")?.Value);
+                var ln = el.Name.LocalName;
+
+                if (ln == "g")   { ParseChildren(el, doc, localXf); continue; }
+                if (ln == "defs" || ln == "symbol" || ln == "style") continue;
+
+                var data = ln switch
+                {
+                    "path"     => ParsePath(el),
+                    "rect"     => ParseRect(el),
+                    "circle"   => ParseCircle(el),
+                    "ellipse"  => ParseEllipseEl(el),
+                    "line"     => ParseLine(el),
+                    "polyline" => ParsePolyline(el, false),
+                    "polygon"  => ParsePolyline(el, true),
+                    _          => null,
+                };
+
+                if (data == null) continue;
+                data.Id = el.Attribute("id")?.Value ?? string.Empty;
+                ApplyPresentation(el, data);
+                doc.Shapes.Add(data);
+            }
+        }
+
+        // ── Shape Parsers ────────────────────────────────────────────────────────
+
+        private static ShapeData ParsePath(XElement el)
+        {
+            var d = el.Attribute("d")?.Value;
+            if (string.IsNullOrEmpty(d)) return null;
+            var path = new PathShape();
+            BuildPathFromCommands(d, path);
+            return new ShapeData { Shape = path, Size = EstimatePathBounds(path) };
+        }
+
+        private static ShapeData ParseRect(XElement el)
+        {
+            float x  = F(el, "x"),  y  = F(el, "y");
+            float w  = F(el, "width"), h = F(el, "height");
+            float rx = F(el, "rx"), ry = F(el, "ry");
+            float r  = Mathf.Max(rx, ry);
+
+            var shape = new RectangleShape { CornerRadius = Vector4.one * r };
+            return new ShapeData { Shape = shape, Size = new Vector2(w, h), Position = new Vector2(x, -y) };
+        }
+
+        private static ShapeData ParseCircle(XElement el)
+        {
+            float cx = F(el, "cx"), cy = F(el, "cy"), r = F(el, "r");
+            return new ShapeData { Shape = new EllipseShape(), Size = Vector2.one * (r * 2f), Position = new Vector2(cx, -cy) };
+        }
+
+        private static ShapeData ParseEllipseEl(XElement el)
+        {
+            float cx = F(el, "cx"), cy = F(el, "cy");
+            float rx = F(el, "rx"), ry = F(el, "ry");
+            return new ShapeData { Shape = new EllipseShape(), Size = new Vector2(rx * 2f, ry * 2f), Position = new Vector2(cx, -cy) };
+        }
+
+        private static ShapeData ParseLine(XElement el)
+        {
+            float x1 = F(el, "x1"), y1 = F(el, "y1");
+            float x2 = F(el, "x2"), y2 = F(el, "y2");
+            var shape = new LineShape
+            {
+                Start = new Vector2(x1, -y1),
+                End   = new Vector2(x2, -y2),
+                Width = 1f,
+            };
+            float mx = (x1 + x2) * 0.5f, my = (y1 + y2) * 0.5f;
+            float bw = Mathf.Abs(x2 - x1) + 4f, bh = Mathf.Abs(y2 - y1) + 4f;
+            return new ShapeData { Shape = shape, Size = new Vector2(bw, bh), Position = new Vector2(mx, -my) };
+        }
+
+        private static ShapeData ParsePolyline(XElement el, bool closed)
+        {
+            var pts = ParsePointList(el.Attribute("points")?.Value);
+            if (pts == null || pts.Count < 2) return null;
+            var path = new PathShape { Closed = closed };
+            foreach (var p in pts)
+                path.Points.Add(new PathPoint { Position = new Vector2(p.x, -p.y), Type = PathPointType.Line });
+            return new ShapeData { Shape = path, Size = EstimatePathBounds(path) };
+        }
+
+        // ── SVG Path Commands ────────────────────────────────────────────────────
+
+        private static void BuildPathFromCommands(string d, PathShape path)
+        {
+            var tokens = TokenizePath(d);
+            int i      = 0;
+            Vector2 cur = Vector2.zero, start = Vector2.zero;
+            Vector2 lastCtrl = Vector2.zero;
+            char    cmd  = 'M';
+
+            while (i < tokens.Count)
+            {
+                var t = tokens[i];
+                if (char.IsLetter(t[0])) { cmd = t[0]; i++; }
+
+                switch (cmd)
+                {
+                    case 'M': case 'm':
+                    {
+                        var p = ReadVec2(tokens, ref i, cur, cmd == 'm');
+                        if (path.Points.Count > 0) path.Closed = false; // new sub-path
+                        path.Points.Add(MakeLine(p));
+                        cur = start = p;
+                        cmd = cmd == 'm' ? 'l' : 'L';
+                        break;
+                    }
+                    case 'L': case 'l':
+                    {
+                        var p = ReadVec2(tokens, ref i, cur, cmd == 'l');
+                        path.Points.Add(MakeLine(p));
+                        cur = p;
+                        break;
+                    }
+                    case 'H': case 'h':
+                    {
+                        float x = ReadF(tokens, ref i);
+                        var p = cmd == 'h' ? new Vector2(cur.x + x, cur.y) : new Vector2(x, cur.y);
+                        path.Points.Add(MakeLine(p));
+                        cur = p;
+                        break;
+                    }
+                    case 'V': case 'v':
+                    {
+                        float y = ReadF(tokens, ref i);
+                        var p = cmd == 'v' ? new Vector2(cur.x, cur.y - y) : new Vector2(cur.x, -y);
+                        path.Points.Add(MakeLine(p));
+                        cur = p;
+                        break;
+                    }
+                    case 'C': case 'c':
+                    {
+                        var c1 = ReadVec2(tokens, ref i, cur, cmd == 'c');
+                        var c2 = ReadVec2(tokens, ref i, cur, cmd == 'c');
+                        var p  = ReadVec2(tokens, ref i, cur, cmd == 'c');
+                        path.Points.Add(MakeBezier(p, c1, c2));
+                        lastCtrl = c2;
+                        cur = p;
+                        break;
+                    }
+                    case 'S': case 's':
+                    {
+                        var c1 = ReflectCtrl(lastCtrl, cur);
+                        var c2 = ReadVec2(tokens, ref i, cur, cmd == 's');
+                        var p  = ReadVec2(tokens, ref i, cur, cmd == 's');
+                        path.Points.Add(MakeBezier(p, c1, c2));
+                        lastCtrl = c2;
+                        cur = p;
+                        break;
+                    }
+                    case 'Q': case 'q':
+                    {
+                        var qc = ReadVec2(tokens, ref i, cur, cmd == 'q');
+                        var p  = ReadVec2(tokens, ref i, cur, cmd == 'q');
+                        // Elevate quadratic to cubic
+                        var c1 = cur + (qc - cur) * (2f / 3f);
+                        var c2 = p   + (qc - p)   * (2f / 3f);
+                        path.Points.Add(MakeBezier(p, c1, c2));
+                        lastCtrl = qc;
+                        cur = p;
+                        break;
+                    }
+                    case 'T': case 't':
+                    {
+                        var qc = ReflectCtrl(lastCtrl, cur);
+                        var p  = ReadVec2(tokens, ref i, cur, cmd == 't');
+                        var c1 = cur + (qc - cur) * (2f / 3f);
+                        var c2 = p   + (qc - p)   * (2f / 3f);
+                        path.Points.Add(MakeBezier(p, c1, c2));
+                        lastCtrl = qc;
+                        cur = p;
+                        break;
+                    }
+                    case 'A': case 'a':
+                        ArcToBezier(tokens, ref i, ref cur, cmd == 'a', path);
+                        break;
+                    case 'Z': case 'z':
+                        path.Closed = true;
+                        cur = start;
+                        break;
+                    default:
+                        i++;
+                        break;
+                }
+            }
+        }
+
+        // Converts SVG arc to 1-4 cubic bezier segments (endpoint → center parameterization).
+        private static void ArcToBezier(
+            List<string> tokens, ref int i, ref Vector2 cur, bool rel, PathShape path)
+        {
+            float rx   = ReadF(tokens, ref i);
+            float ry   = ReadF(tokens, ref i);
+            float xRot = ReadF(tokens, ref i) * Mathf.Deg2Rad;
+            bool  large = ReadF(tokens, ref i) != 0;
+            bool  sweep = ReadF(tokens, ref i) != 0;
+            var   p2   = ReadVec2(tokens, ref i, cur, rel);
+
+            if (Vector2.Distance(cur, p2) < 0.001f) { cur = p2; return; }
+
+            rx = Mathf.Abs(rx); ry = Mathf.Abs(ry);
+            if (rx < 0.001f || ry < 0.001f) { path.Points.Add(MakeLine(p2)); cur = p2; return; }
+
+            float cos = Mathf.Cos(xRot), sin = Mathf.Sin(xRot);
+            float dx2 = (cur.x - p2.x) * 0.5f, dy2 = (cur.y - p2.y) * 0.5f;
+            float x1p =  cos * dx2 + sin * dy2;
+            float y1p = -sin * dx2 + cos * dy2;
+
+            float x1p2 = x1p * x1p, y1p2 = y1p * y1p;
+            float rx2   = rx  * rx,  ry2  = ry  * ry;
+
+            float lambda = x1p2 / rx2 + y1p2 / ry2;
+            if (lambda > 1f) { float ls = Mathf.Sqrt(lambda); rx *= ls; ry *= ls; rx2 = rx*rx; ry2 = ry*ry; }
+
+            float num = Mathf.Max(0f, rx2 * ry2 - rx2 * y1p2 - ry2 * x1p2);
+            float den = rx2 * y1p2 + ry2 * x1p2;
+            float sq  = (large == sweep ? -1f : 1f) * Mathf.Sqrt(num / Mathf.Max(den, 1e-6f));
+
+            float cxp =  sq * rx * y1p / ry;
+            float cyp = -sq * ry * x1p / rx;
+            float cx  = cos * cxp - sin * cyp + (cur.x + p2.x) * 0.5f;
+            float cy  = sin * cxp + cos * cyp + (cur.y + p2.y) * 0.5f;
+
+            float ux = (x1p - cxp) / rx, uy = (y1p - cyp) / ry;
+            float vx = -(x1p + cxp) / rx, vy = -(y1p + cyp) / ry;
+            float theta1 = Mathf.Atan2(uy, ux);
+            float dTheta  = Mathf.Atan2(vy, vx) - theta1;
+            if (!sweep && dTheta > 0) dTheta -= Mathf.PI * 2f;
+            if ( sweep && dTheta < 0) dTheta += Mathf.PI * 2f;
+
+            int  segs   = Mathf.Max(1, Mathf.CeilToInt(Mathf.Abs(dTheta) / (Mathf.PI * 0.5f)));
+            float dSeg  = dTheta / segs;
+            float alpha = Mathf.Sin(dSeg) * (Mathf.Sqrt(4f + 3f * Mathf.Tan(dSeg * 0.5f) * Mathf.Tan(dSeg * 0.5f)) - 1f) / 3f;
+
+            Vector2 ArcPoint(float t) {
+                float xp = rx * Mathf.Cos(t), yp = ry * Mathf.Sin(t);
+                return new Vector2(cos * xp - sin * yp + cx, sin * xp + cos * yp + cy);
+            }
+            Vector2 ArcDeriv(float t) {
+                float xp = -rx * Mathf.Sin(t), yp = ry * Mathf.Cos(t);
+                return new Vector2(cos * xp - sin * yp, sin * xp + cos * yp);
+            }
+
+            float t = theta1;
+            Vector2 p1Cur = cur;
+            for (int s = 0; s < segs; s++)
+            {
+                float t2 = t + dSeg;
+                var d1 = ArcDeriv(t);
+                var d2 = ArcDeriv(t2);
+                var ep = ArcPoint(t2);
+                var c1 = p1Cur + d1 * alpha;
+                var c2 = ep    - d2 * alpha;
+                path.Points.Add(MakeBezier(new Vector2(ep.x, -ep.y), new Vector2(c1.x, -c1.y), new Vector2(c2.x, -c2.y)));
+                t    = t2;
+                p1Cur = ep;
+            }
+            cur = p2;
+        }
+
+        // ── Presentation (fill/stroke) ───────────────────────────────────────────
+
+        private static void ApplyPresentation(XElement el, ShapeData data)
+        {
+            string fill    = Attr(el, "fill")         ?? "black";
+            string stroke  = Attr(el, "stroke")       ?? "none";
+            float  opacity = FA(el, "opacity", 1f);
+            float  fillOp  = FA(el, "fill-opacity",   1f) * opacity;
+            float  strkOp  = FA(el, "stroke-opacity", 1f) * opacity;
+            float  strkW   = FA(el, "stroke-width",   1f);
+
+            if (fill != "none")
+            {
+                var c = ParseColor(fill);
+                c.a *= fillOp;
+                data.Fills.Add(new FillLayer { Fill = new SolidFill { Color = c } });
+            }
+
+            if (stroke != "none")
+            {
+                var c = ParseColor(stroke);
+                c.a *= strkOp;
+                data.Strokes.Add(new StrokeLayer
+                {
+                    Fill      = new SolidFill { Color = c },
+                    Width     = strkW,
+                    Alignment = StrokeAlignment.Center,
+                });
+            }
+        }
+
+        // ── Utilities ─────────────────────────────────────────────────────────────
+
+        private static PathPoint MakeLine(Vector2 p) =>
+            new PathPoint { Position = new Vector2(p.x, -p.y), Type = PathPointType.Line };
+
+        private static PathPoint MakeBezier(Vector2 pos, Vector2 cp1, Vector2 cp2) =>
+            new PathPoint { Position = pos, ControlPoint1 = cp1, ControlPoint2 = cp2, Type = PathPointType.Bezier };
+
+        private static Vector2 ReflectCtrl(Vector2 ctrl, Vector2 cur) => cur * 2f - ctrl;
+
+        private static Vector2 EstimatePathBounds(PathShape ps)
+        {
+            if (ps.Points == null || ps.Points.Count == 0) return Vector2.one * 100f;
+            float minX = float.MaxValue, minY = float.MaxValue;
+            float maxX = float.MinValue, maxY = float.MinValue;
+            foreach (var pt in ps.Points)
+            {
+                minX = Mathf.Min(minX, pt.Position.x); maxX = Mathf.Max(maxX, pt.Position.x);
+                minY = Mathf.Min(minY, pt.Position.y); maxY = Mathf.Max(maxY, pt.Position.y);
+            }
+            return new Vector2(maxX - minX, maxY - minY);
+        }
+
+        private static Vector2 ParseViewBox(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return new Vector2(512, 512);
+            var parts = s.Split(new[] {' ', ','}, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 4)
+                return new Vector2(Pf(parts[2]), Pf(parts[3]));
+            if (parts.Length >= 2)
+                return new Vector2(Pf(parts[0]), Pf(parts[1]));
+            return new Vector2(512, 512);
+        }
+
+        private static Color ParseColor(string s)
+        {
+            if (string.IsNullOrEmpty(s) || s == "none" || s == "transparent") return Color.clear;
+            if (s.StartsWith("#"))
+            {
+                s = s.Substring(1);
+                if (s.Length == 3) s = $"{s[0]}{s[0]}{s[1]}{s[1]}{s[2]}{s[2]}";
+                if (s.Length == 6 && uint.TryParse(s, NumberStyles.HexNumber, null, out uint rgb))
+                    return new Color((rgb>>16&0xFF)/255f, (rgb>>8&0xFF)/255f, (rgb&0xFF)/255f);
+            }
+            if (s.StartsWith("rgb("))
+            {
+                var nums = s.Substring(4, s.Length - 5).Split(',');
+                if (nums.Length == 3)
+                    return new Color(Pf(nums[0])/255f, Pf(nums[1])/255f, Pf(nums[2])/255f);
+            }
+            // Named colors (common subset)
+            return s switch
+            {
+                "black"   => Color.black,   "white"  => Color.white,
+                "red"     => Color.red,     "green"  => Color.green,
+                "blue"    => Color.blue,    "yellow" => Color.yellow,
+                "cyan"    => Color.cyan,    "magenta"=> Color.magenta,
+                "gray"    or "grey" => Color.gray,
+                "transparent" => Color.clear,
+                _ => Color.black,
+            };
+        }
+
+        private static Matrix2x3 ParseTransform(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return Matrix2x3.Identity;
+            if (s.StartsWith("translate("))
+            {
+                var nums = s.Substring(10, s.Length-11).Split(new[]{',', ' '}, StringSplitOptions.RemoveEmptyEntries);
+                float tx = nums.Length > 0 ? Pf(nums[0]) : 0f;
+                float ty = nums.Length > 1 ? Pf(nums[1]) : 0f;
+                return new Matrix2x3(1,0,tx, 0,1,-ty);
+            }
+            if (s.StartsWith("scale("))
+            {
+                var nums = s.Substring(6, s.Length-7).Split(new[]{',', ' '}, StringSplitOptions.RemoveEmptyEntries);
+                float sx = nums.Length > 0 ? Pf(nums[0]) : 1f;
+                float sy = nums.Length > 1 ? Pf(nums[1]) : sx;
+                return new Matrix2x3(sx,0,0, 0,sy,0);
+            }
+            return Matrix2x3.Identity;
+        }
+
+        // ── Token / Number Helpers ────────────────────────────────────────────────
+
+        private static List<string> TokenizePath(string d)
+        {
+            var result = new List<string>();
+            int i = 0, n = d.Length;
+            while (i < n)
+            {
+                char c = d[i];
+                if (char.IsWhiteSpace(c) || c == ',') { i++; continue; }
+                if (char.IsLetter(c)) { result.Add(c.ToString()); i++; continue; }
+                int start = i;
+                if (c == '-' || c == '+') i++;
+                while (i < n && (char.IsDigit(d[i]) || d[i] == '.' || d[i] == 'e' || d[i] == 'E' ||
+                       ((d[i] == '+' || d[i] == '-') && i > start && (d[i-1] == 'e' || d[i-1] == 'E')))) i++;
+                if (i > start) result.Add(d.Substring(start, i - start));
+            }
+            return result;
+        }
+
+        private static List<Vector2> ParsePointList(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return null;
+            var parts = s.Split(new[]{' ', ',', '\t', '\n', '\r'}, StringSplitOptions.RemoveEmptyEntries);
+            var pts = new List<Vector2>();
+            for (int i = 0; i + 1 < parts.Length; i += 2)
+                pts.Add(new Vector2(Pf(parts[i]), Pf(parts[i+1])));
+            return pts;
+        }
+
+        private static float ReadF(List<string> tokens, ref int i) =>
+            i < tokens.Count && float.TryParse(tokens[i++], NumberStyles.Float, CultureInfo.InvariantCulture, out float v) ? v : 0f;
+
+        private static Vector2 ReadVec2(List<string> tokens, ref int i, Vector2 origin, bool relative)
+        {
+            float x = ReadF(tokens, ref i);
+            float y = ReadF(tokens, ref i);
+            if (relative) return origin + new Vector2(x, -y);
+            return new Vector2(x, -y);
+        }
+
+        private static float F(XElement el, string name) =>
+            float.TryParse(el.Attribute(name)?.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out float v) ? v : 0f;
+
+        private static float FA(XElement el, string name, float def)
+        {
+            var v = Attr(el, name);
+            return v != null && float.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out float r) ? r : def;
+        }
+
+        private static string Attr(XElement el, string name) =>
+            el.Attribute(name)?.Value ?? el.Attribute("style")?.Value?.Let(style => ExtractStyle(style, name));
+
+        private static string ExtractStyle(string style, string prop)
+        {
+            foreach (var part in style.Split(';'))
+            {
+                var kv = part.Trim().Split(':');
+                if (kv.Length == 2 && kv[0].Trim() == prop) return kv[1].Trim();
+            }
+            return null;
+        }
+
+        private static float Pf(string s) =>
+            float.TryParse(s?.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float v) ? v : 0f;
+
+        // ── Minimal 2x3 transform matrix (for SVG transforms) ───────────────────
+
+        private struct Matrix2x3
+        {
+            public float M00, M01, M02, M10, M11, M12;
+            public static readonly Matrix2x3 Identity = new Matrix2x3(1,0,0, 0,1,0);
+
+            public Matrix2x3(float m00, float m01, float m02, float m10, float m11, float m12)
+            { M00=m00; M01=m01; M02=m02; M10=m10; M11=m11; M12=m12; }
+
+            public static Matrix2x3 operator *(Matrix2x3 a, Matrix2x3 b) =>
+                new Matrix2x3(
+                    a.M00*b.M00+a.M01*b.M10, a.M00*b.M01+a.M01*b.M11, a.M00*b.M02+a.M01*b.M12+a.M02,
+                    a.M10*b.M00+a.M11*b.M10, a.M10*b.M01+a.M11*b.M11, a.M10*b.M02+a.M11*b.M12+a.M12);
+        }
+    }
+
+    internal static class StringExt
+    {
+        public static T Let<T>(this string s, Func<string, T> f) => f(s);
+    }
+}

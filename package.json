@@ -1,0 +1,13 @@
+{
+    "name": "com.vectorkit.vectorkit",
+    "version": "1.0.0",
+    "displayName": "VectorKit",
+    "description": "Figma-style vector shapes for Unity — SDF-based rendering, multiple fills/strokes, effects, blend modes, and SVG import.",
+    "unity": "6000.0",
+    "author": {
+        "name": "VectorKit"
+    },
+    "dependencies": {
+        "com.unity.ugui": "2.0.0"
+    }
+}
