@@ -18,7 +18,7 @@ namespace VectorKit.Runtime
         [SerializeField]
         public List<StrokeLayer> Strokes = new List<StrokeLayer>();
 
-        [SerializeField]
+        [SerializeReference]
         public List<VectorEffect> Effects = new List<VectorEffect>();
 
         public Vector2 Size = new Vector2(100f, 100f);

@@ -30,9 +30,9 @@ namespace VectorKit.Editor
             _opacityProp = serializedObject.FindProperty("ShapeOpacity");
             _colorProp   = serializedObject.FindProperty("m_Color");
 
-            _fillsList   = InspectorHelpers.BuildLayerList(_fillsProp,   "Fills",   InspectorHelpers.AddFillLayer);
-            _strokesList = InspectorHelpers.BuildLayerList(_strokesProp, "Strokes", InspectorHelpers.AddStrokeLayer);
-            _effectsList = InspectorHelpers.BuildLayerList(_effectsProp, "Effects", InspectorHelpers.AddEffect);
+            if (_fillsProp   != null) _fillsList   = InspectorHelpers.BuildLayerList(_fillsProp,   "Fills",   InspectorHelpers.AddFillLayer);
+            if (_strokesProp != null) _strokesList = InspectorHelpers.BuildLayerList(_strokesProp, "Strokes", InspectorHelpers.AddStrokeLayer);
+            if (_effectsProp != null) _effectsList = InspectorHelpers.BuildLayerList(_effectsProp, "Effects", InspectorHelpers.AddEffect);
         }
 
         public override void OnInspectorGUI()
@@ -55,13 +55,13 @@ namespace VectorKit.Editor
             EditorGUILayout.Space(4);
 
             // ── Fill Layers ────────────────────────────────────────────────────
-            _fillsList.DoLayoutList();
+            _fillsList?.DoLayoutList();
 
             // ── Stroke Layers ──────────────────────────────────────────────────
-            _strokesList.DoLayoutList();
+            _strokesList?.DoLayoutList();
 
             // ── Effects ────────────────────────────────────────────────────────
-            _effectsList.DoLayoutList();
+            _effectsList?.DoLayoutList();
 
             if (serializedObject.ApplyModifiedProperties())
             {
@@ -123,7 +123,7 @@ namespace VectorKit.Editor
                 case PathShape p:      PathHandles.Draw(ui, p);      break;
             }
 
-            GradientHandles.Draw(ui, serializedObject);
+            GradientHandles.Draw(ui);
         }
     }
 }

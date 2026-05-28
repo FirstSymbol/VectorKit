@@ -9,6 +9,14 @@ namespace VectorKit.Runtime
     [DisallowMultipleComponent]
     public class VectorShapeUI : MaskableGraphic, ICanvasRaycastFilter
     {
+        // Channels required by the VectorShape shader (UV1/2/3, Normal, Tangent)
+        private const AdditionalCanvasShaderChannels RequiredChannels =
+            AdditionalCanvasShaderChannels.TexCoord1 |
+            AdditionalCanvasShaderChannels.TexCoord2 |
+            AdditionalCanvasShaderChannels.TexCoord3 |
+            AdditionalCanvasShaderChannels.Normal     |
+            AdditionalCanvasShaderChannels.Tangent;
+
         [SerializeReference]
         public ShapeDefinition Shape = new RectangleShape();
 
@@ -18,7 +26,7 @@ namespace VectorKit.Runtime
         [SerializeField]
         public List<StrokeLayer> Strokes = new List<StrokeLayer>();
 
-        [SerializeField]
+        [SerializeReference]
         public List<VectorEffect> Effects = new List<VectorEffect>();
 
         [Range(0f, 1f)]
@@ -49,6 +57,23 @@ namespace VectorKit.Runtime
             }
         }
 
+        // ── Lifecycle ─ (early) ──────────────────────────────────────────────────
+
+        protected override void OnEnable()
+        {
+            base.OnEnable();
+            EnsureCanvasChannels();
+        }
+
+        private void EnsureCanvasChannels()
+        {
+            var canvas = GetComponentInParent<Canvas>();
+            if (canvas == null) return;
+            var root = canvas.rootCanvas;
+            if ((root.additionalShaderChannels & RequiredChannels) != RequiredChannels)
+                root.additionalShaderChannels |= RequiredChannels;
+        }
+
         // ── Mesh Generation ──────────────────────────────────────────────────────
 
         protected override void OnPopulateMesh(VertexHelper vh)
@@ -63,7 +88,6 @@ namespace VectorKit.Runtime
 
             ApplySoftMaskToState();
             _stateDirty = true;
-            SetMaterialDirty();
         }
 
         protected override void UpdateMaterial()
@@ -105,7 +129,7 @@ namespace VectorKit.Runtime
             return d <= 0f;
         }
 
-        // ── Lifecycle ────────────────────────────────────────────────────────────
+        // ── Lifecycle ─ (late) ───────────────────────────────────────────────────
 
         protected override void OnDestroy()
         {
@@ -124,6 +148,7 @@ namespace VectorKit.Runtime
         protected override void OnValidate()
         {
             base.OnValidate();
+            EnsureCanvasChannels();
             SetVerticesDirty();
             SetMaterialDirty();
         }

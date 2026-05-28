@@ -93,7 +93,7 @@ Shader "VectorKit/ShapeWorld"
                 o.precalc2 = float4(v.texcoord0.z, v.texcoord0.w, 0, 0);
                 o.extraData = float4(0, 0, v.tangent.z, v.tangent.w);
 
-                float2 halfSize = v.texcoord2.xy * 0.5;
+                float2 halfSize = v.texcoord2.xy;
                 float4 params   = v.texcoord1;
 
 #if defined(SHAPE_POLYGON)
@@ -149,7 +149,7 @@ Shader "VectorKit/ShapeWorld"
             fixed4 frag(v2f i) : SV_Target
             {
                 float2 p = i.uv0.xy, p_orig = i.uv0.zw;
-                float2 halfSize = i.baseData.xy * 0.5;
+                float2 halfSize = i.baseData.xy;
                 float  smoothing = i.baseData.z, effectType = i.baseData.w;
                 float  blur = i.effectData.x, aa = i.effectData.y, padding = i.effectData.z, spread = i.effectData.w;
 
@@ -171,8 +171,8 @@ Shader "VectorKit/ShapeWorld"
                     float bop=_BoolData_OpType[k].x, bt=_BoolData_OpType[k].y, bsm=_BoolData_OpType[k].z, bsb=_BoolData_OpType[k].w;
                     float4 btr=_BoolData_Transform[k]; float2 bsz=_BoolData_Size[k].xy; float4 bpa=_BoolData_ShapeParams[k];
                     bool isPath = (bt>5.5&&bt<6.5);
-                    if (needOrig)   { float2 bp=p_orig-btr.xy; if(abs(btr.z)>0.0001||abs(btr.w-1)>0.0001) bp=float2(bp.x*btr.w-bp.y*btr.z,bp.x*btr.z+bp.y*btr.w); float d2=GetBasicSDF(bp+noiseOff,bsz*.5,bt,bsm,bpa,isPath); if(bsb>0.001) d_orig=smin_op(d_orig,d2,bop,bsb); else d_orig=hard_op(d_orig,d2,bop); }
-                    if (needShadow) { float2 bp=p-btr.xy;      if(abs(btr.z)>0.0001||abs(btr.w-1)>0.0001) bp=float2(bp.x*btr.w-bp.y*btr.z,bp.x*btr.z+bp.y*btr.w); float d2=GetBasicSDF(bp+noiseOff,bsz*.5,bt,bsm,bpa,isPath); if(bsb>0.001) d=smin_op(d,d2,bop,bsb);      else d=hard_op(d,d2,bop); }
+                    if (needOrig)   { float2 bp=p_orig-btr.xy; if(abs(btr.z)>0.0001||abs(btr.w-1)>0.0001) bp=float2(bp.x*btr.w-bp.y*btr.z,bp.x*btr.z+bp.y*btr.w); float d2=GetBasicSDF(bp+noiseOff,bsz,bt,bsm,bpa,isPath); if(bsb>0.001) d_orig=smin_op(d_orig,d2,bop,bsb); else d_orig=hard_op(d_orig,d2,bop); }
+                    if (needShadow) { float2 bp=p-btr.xy;      if(abs(btr.z)>0.0001||abs(btr.w-1)>0.0001) bp=float2(bp.x*btr.w-bp.y*btr.z,bp.x*btr.z+bp.y*btr.w); float d2=GetBasicSDF(bp+noiseOff,bsz,bt,bsm,bpa,isPath); if(bsb>0.001) d=smin_op(d,d2,bop,bsb);      else d=hard_op(d,d2,bop); }
                 }
 #endif
                 if (needOrig)   d_orig += padding;

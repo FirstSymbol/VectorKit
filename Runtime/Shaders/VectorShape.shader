@@ -123,7 +123,7 @@ Shader "VectorKit/Shape"
                 float4 effectData   : TEXCOORD5;  // x=blur  y=aa  z=internalPadding  w=spread
                 float4 precalc1     : TEXCOORD6;
                 float4 precalc2     : TEXCOORD7;
-                float4 extraData    : TANGENT;    // xy=p2 for ring/starInner  z=gradOffsetX/bevelAngle  w=gradOffsetY/strokeAlignment
+                float4 extraData    : TEXCOORD8;  // xy=p2 for ring/starInner  z=gradOffsetX/bevelAngle  w=gradOffsetY/strokeAlignment
             };
 
             // ── Vertex Shader ─────────────────────────────────────────────────
@@ -169,7 +169,7 @@ Shader "VectorKit/Shape"
                 o.precalc2  = float4(v.texcoord0.z, v.texcoord0.w, 0, 0);  // zw = dashData
                 o.extraData = float4(0, 0, v.tangent.z, v.tangent.w);
 
-                float2 halfSize = v.texcoord2.xy * 0.5;
+                float2 halfSize = v.texcoord2.xy;
                 float4 params   = v.texcoord1;
 
 #if defined(SHAPE_POLYGON)
@@ -263,7 +263,7 @@ Shader "VectorKit/Shape"
             {
                 float2 p      = i.uv0.xy;
                 float2 p_orig = i.uv0.zw;
-                float2 halfSize      = i.baseData.xy * 0.5;
+                float2 halfSize      = i.baseData.xy;
                 float  customSmooth  = i.baseData.z;
                 float  effectType    = i.baseData.w;
 
@@ -313,7 +313,7 @@ Shader "VectorKit/Shape"
                         float2 bp = p_orig - boolTrans.xy;
                         if (abs(boolTrans.z) > 0.0001 || abs(boolTrans.w - 1.0) > 0.0001)
                             bp = float2(bp.x * boolTrans.w - bp.y * boolTrans.z, bp.x * boolTrans.z + bp.y * boolTrans.w);
-                        float d2 = GetBasicSDF(bp + noiseOff, boolSize * 0.5, boolType, boolSmooth, boolParams, isPathOp);
+                        float d2 = GetBasicSDF(bp + noiseOff, boolSize, boolType, boolSmooth, boolParams, isPathOp);
                         if (smoothBlend > 0.001) d_orig = smin_op(d_orig, d2, boolOp, smoothBlend);
                         else                     d_orig = hard_op(d_orig, d2, boolOp);
                     }
@@ -322,7 +322,7 @@ Shader "VectorKit/Shape"
                         float2 bp = p - boolTrans.xy;
                         if (abs(boolTrans.z) > 0.0001 || abs(boolTrans.w - 1.0) > 0.0001)
                             bp = float2(bp.x * boolTrans.w - bp.y * boolTrans.z, bp.x * boolTrans.z + bp.y * boolTrans.w);
-                        float d2 = GetBasicSDF(bp + noiseOff, boolSize * 0.5, boolType, boolSmooth, boolParams, isPathOp);
+                        float d2 = GetBasicSDF(bp + noiseOff, boolSize, boolType, boolSmooth, boolParams, isPathOp);
                         if (smoothBlend > 0.001) d = smin_op(d, d2, boolOp, smoothBlend);
                         else                     d = hard_op(d, d2, boolOp);
                     }
@@ -366,7 +366,7 @@ Shader "VectorKit/Shape"
                 float4 colorSample;
                 if (fillKind > 3.5) // Image
                 {
-                    float2 patUV = (p_orig / halfSize * 0.5 + 0.5) * gradOffset + gradOffset; // tiling/offset
+                    float2 patUV = p_orig / halfSize * 0.5 + 0.5; // [0,1] across shape bounds
                     colorSample = tex2D(_PatternTex, patUV);
                 }
                 else

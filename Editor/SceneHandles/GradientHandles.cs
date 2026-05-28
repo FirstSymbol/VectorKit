@@ -7,7 +7,7 @@ namespace VectorKit.Editor
     // Scene handles for editing gradient fill parameters (offset, angle, scale, center, radius).
     internal static class GradientHandles
     {
-        public static void Draw(VectorShapeUI ui, SerializedObject so)
+        public static void Draw(VectorShapeUI ui)
         {
             if (ui.Fills == null || ui.Fills.Count == 0) return;
 
@@ -22,21 +22,21 @@ namespace VectorKit.Editor
 
                 switch (layer.Fill)
                 {
-                    case LinearGradientFill lin:  DrawLinear(ui, so, lin,  halfSize, t); break;
-                    case RadialGradientFill rad:  DrawRadial(ui, so, rad,  halfSize, t); break;
-                    case ConicGradientFill  con:  DrawConic (ui, so, con,  halfSize, t); break;
+                    case LinearGradientFill lin: DrawLinear(ui, lin, halfSize, t); break;
+                    case RadialGradientFill rad: DrawRadial(ui, rad, halfSize, t); break;
+                    case ConicGradientFill  con: DrawConic (ui, con, halfSize, t); break;
                 }
             }
         }
 
         // ── Linear gradient: centre disc + end-point handle ───────────────────────
 
-        private static void DrawLinear(VectorShapeUI ui, SerializedObject so,
+        private static void DrawLinear(VectorShapeUI ui,
             LinearGradientFill fill, Vector2 halfSize, Transform t)
         {
-            float rad  = fill.Angle * Mathf.Deg2Rad;
-            var   dir  = new Vector2(Mathf.Cos(rad), Mathf.Sin(rad));
-            float len  = Mathf.Max(halfSize.x, halfSize.y) * fill.Scale;
+            float rad = fill.Angle * Mathf.Deg2Rad;
+            var   dir = new Vector2(Mathf.Cos(rad), Mathf.Sin(rad));
+            float len = Mathf.Max(halfSize.x, halfSize.y) * fill.Scale;
 
             Vector2 centreLocal = fill.Offset * halfSize;
             Vector2 endLocal    = centreLocal + dir * len;
@@ -44,7 +44,6 @@ namespace VectorKit.Editor
             using (new Handles.DrawingScope(new Color(1f, 0.8f, 0.2f, 0.7f)))
                 VectorHandleUtility.DrawDottedLine(centreLocal, endLocal, t);
 
-            // Centre drag
             EditorGUI.BeginChangeCheck();
             Vector2 newCentre = VectorHandleUtility.DragHandle(centreLocal, t);
             if (EditorGUI.EndChangeCheck())
@@ -56,7 +55,6 @@ namespace VectorKit.Editor
                 MarkDirty(ui);
             }
 
-            // End drag — adjusts angle and scale together
             EditorGUI.BeginChangeCheck();
             Vector2 newEnd = VectorHandleUtility.DragHandle(endLocal, t);
             if (EditorGUI.EndChangeCheck())
@@ -71,20 +69,18 @@ namespace VectorKit.Editor
 
         // ── Radial gradient: centre disc + radius handle ──────────────────────────
 
-        private static void DrawRadial(VectorShapeUI ui, SerializedObject so,
+        private static void DrawRadial(VectorShapeUI ui,
             RadialGradientFill fill, Vector2 halfSize, Transform t)
         {
-            Vector2 centreLocal  = fill.Center * halfSize;
-            float   worldRadius  = fill.Radius * Mathf.Max(halfSize.x, halfSize.y);
-            Vector2 radiusLocal  = centreLocal + new Vector2(worldRadius, 0f);
+            Vector2 centreLocal = fill.Center * halfSize;
+            float   worldRadius = fill.Radius * Mathf.Max(halfSize.x, halfSize.y);
+            Vector2 radiusLocal = centreLocal + new Vector2(worldRadius, 0f);
 
-            // Draw circle outline in world space
             Vector3 wc = t.TransformPoint(centreLocal);
             Vector3 wr = t.TransformPoint(radiusLocal);
             using (new Handles.DrawingScope(new Color(1f, 0.8f, 0.2f, 0.7f)))
                 Handles.DrawWireArc(wc, Vector3.back, (wr - wc).normalized, 360f, Vector3.Distance(wc, wr));
 
-            // Centre drag
             EditorGUI.BeginChangeCheck();
             Vector2 newCentre = VectorHandleUtility.DragHandle(centreLocal, t);
             if (EditorGUI.EndChangeCheck())
@@ -96,7 +92,6 @@ namespace VectorKit.Editor
                 MarkDirty(ui);
             }
 
-            // Radius drag
             EditorGUI.BeginChangeCheck();
             Vector2 newRadius = VectorHandleUtility.DragHandle(radiusLocal, t);
             if (EditorGUI.EndChangeCheck())
@@ -110,7 +105,7 @@ namespace VectorKit.Editor
 
         // ── Conic gradient: centre disc + start-angle handle ─────────────────────
 
-        private static void DrawConic(VectorShapeUI ui, SerializedObject so,
+        private static void DrawConic(VectorShapeUI ui,
             ConicGradientFill fill, Vector2 halfSize, Transform t)
         {
             Vector2 centreLocal = fill.Center * halfSize;
@@ -121,7 +116,6 @@ namespace VectorKit.Editor
             using (new Handles.DrawingScope(new Color(1f, 0.8f, 0.2f, 0.7f)))
                 VectorHandleUtility.DrawDottedLine(centreLocal, angleLocal, t);
 
-            // Centre drag
             EditorGUI.BeginChangeCheck();
             Vector2 newCentre = VectorHandleUtility.DragHandle(centreLocal, t);
             if (EditorGUI.EndChangeCheck())
@@ -133,7 +127,6 @@ namespace VectorKit.Editor
                 MarkDirty(ui);
             }
 
-            // Angle drag
             EditorGUI.BeginChangeCheck();
             Vector2 newAngle = VectorHandleUtility.DragHandle(angleLocal, t);
             if (EditorGUI.EndChangeCheck())
