@@ -1,0 +1,12 @@
+fileFormatVersion: 2
+guid: de60525035c6dcc4c808f30102af1635
+ScriptedImporter:
+  internalIDToNameTable: []
+  externalObjects: {}
+  serializedVersion: 2
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+  script: {fileID: 11500000, guid: 6269405660564f44c913c094694317f1, type: 3}
+  PixelsPerUnit: 1
+  UseUICanvas: 1

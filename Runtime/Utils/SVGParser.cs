@@ -42,23 +42,92 @@ namespace VectorKit.Runtime
             doc.ViewBox = ParseViewBox(root.Attribute("viewBox")?.Value
                        ?? root.Attribute("width")?.Value + " " + root.Attribute("height")?.Value);
 
-            ParseChildren(root, doc, Matrix2x3.Identity);
+            // Seed the inherited presentation context from root <svg> attributes
+            var rootCtx = PresentContext.Default.Inherit(root);
+            ParseChildren(root, doc, Matrix2x3.Identity, rootCtx);
             return doc;
         }
 
+        // Inheritable presentation attributes that cascade through the SVG tree
+        private struct PresentContext
+        {
+            public string Fill;         // "none", "#rrggbb", named color, or null=inherit
+            public string Stroke;       // same
+            public float  FillOpacity;
+            public float  StrokeOpacity;
+            public float  Opacity;
+            public float  StrokeWidth;
+
+            public static readonly PresentContext Default = new PresentContext
+            { Fill = "black", Stroke = "none", FillOpacity = 1f, StrokeOpacity = 1f, Opacity = 1f, StrokeWidth = 1f };
+
+            public PresentContext Inherit(XElement el)
+            {
+                var r = this;
+                var style = el.Attribute("style")?.Value;
+                r.Fill         = Attrs(el, style, "fill",           r.Fill);
+                r.Stroke       = Attrs(el, style, "stroke",         r.Stroke);
+                r.FillOpacity  = FA2(el, style, "fill-opacity",     r.FillOpacity);
+                r.StrokeOpacity= FA2(el, style, "stroke-opacity",   r.StrokeOpacity);
+                r.Opacity      = FA2(el, style, "opacity",          r.Opacity);
+                r.StrokeWidth  = FA2(el, style, "stroke-width",     r.StrokeWidth);
+                return r;
+            }
+
+            static string Attrs(XElement el, string style, string name, string fallback)
+            {
+                var v = el.Attribute(name)?.Value;
+                if (v != null) return v;
+                if (style != null) { var s = ExtractStyleStatic(style, name); if (s != null) return s; }
+                return fallback;
+            }
+            static float FA2(XElement el, string style, string name, float fallback)
+            {
+                var v = el.Attribute(name)?.Value;
+                if (v == null && style != null) v = ExtractStyleStatic(style, name);
+                return v != null && float.TryParse(v, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out float r) ? r : fallback;
+            }
+            static string ExtractStyleStatic(string style, string prop)
+            {
+                foreach (var part in style.Split(';'))
+                {
+                    var kv = part.Trim().Split(':');
+                    if (kv.Length == 2 && kv[0].Trim() == prop) return kv[1].Trim();
+                }
+                return null;
+            }
+        }
+
         private static void ParseChildren(XElement parent, Document doc, Matrix2x3 xf)
+            => ParseChildren(parent, doc, xf, PresentContext.Default);
+
+        private static void ParseChildren(XElement parent, Document doc, Matrix2x3 xf, PresentContext ctx)
         {
             foreach (var el in parent.Elements())
             {
-                var localXf = xf * ParseTransform(el.Attribute("transform")?.Value);
+                var localXf  = xf * ParseTransform(el.Attribute("transform")?.Value);
+                var localCtx = ctx.Inherit(el);
                 var ln = el.Name.LocalName;
 
-                if (ln == "g")   { ParseChildren(el, doc, localXf); continue; }
+                if (ln == "g")   { ParseChildren(el, doc, localXf, localCtx); continue; }
                 if (ln == "defs" || ln == "symbol" || ln == "style") continue;
+
+                // <path> may produce multiple sub-paths — handle separately
+                if (ln == "path")
+                {
+                    string pathId = el.Attribute("id")?.Value ?? string.Empty;
+                    foreach (var sd in ParsePathShapes(el))
+                    {
+                        sd.Id = pathId;
+                        ApplyPresentation(localCtx, sd);
+                        doc.Shapes.Add(sd);
+                    }
+                    continue;
+                }
 
                 var data = ln switch
                 {
-                    "path"     => ParsePath(el),
                     "rect"     => ParseRect(el),
                     "circle"   => ParseCircle(el),
                     "ellipse"  => ParseEllipseEl(el),
@@ -70,30 +139,33 @@ namespace VectorKit.Runtime
 
                 if (data == null) continue;
                 data.Id = el.Attribute("id")?.Value ?? string.Empty;
-                ApplyPresentation(el, data);
+                ApplyPresentation(localCtx, data);
                 doc.Shapes.Add(data);
             }
         }
 
         // ── Shape Parsers ────────────────────────────────────────────────────────
 
-        private static ShapeData ParsePath(XElement el)
+        // Returns one ShapeData per SVG sub-path (each M command starts a new sub-path).
+        private static IEnumerable<ShapeData> ParsePathShapes(XElement el)
         {
             var d = el.Attribute("d")?.Value;
-            if (string.IsNullOrEmpty(d)) return null;
-            var path = new PathShape();
-            BuildPathFromCommands(d, path);
-            // Center path points so origin = bounding-box center
-            Vector2 center;
-            Vector2 size = EstimatePathBoundsAndCenter(path, out center);
-            for (int pi = 0; pi < path.Points.Count; pi++)
+            if (string.IsNullOrEmpty(d)) yield break;
+
+            foreach (var path in BuildSubPaths(d))
             {
-                var pt = path.Points[pi];
-                pt.Position -= center;
-                if (pt.Type == PathPointType.Bezier) { pt.ControlPoint1 -= center; pt.ControlPoint2 -= center; }
-                path.Points[pi] = pt;
+                if (path.Points.Count == 0) continue;
+                Vector2 center;
+                Vector2 size = EstimatePathBoundsAndCenter(path, out center);
+                for (int pi = 0; pi < path.Points.Count; pi++)
+                {
+                    var pt = path.Points[pi];
+                    pt.Position -= center;
+                    if (pt.Type == PathPointType.Bezier) { pt.ControlPoint1 -= center; pt.ControlPoint2 -= center; }
+                    path.Points[pi] = pt;
+                }
+                yield return new ShapeData { Shape = path, Size = size, Position = center };
             }
-            return new ShapeData { Shape = path, Size = size, Position = center };
         }
 
         private static ShapeData ParseRect(XElement el)
@@ -160,13 +232,16 @@ namespace VectorKit.Runtime
 
         // ── SVG Path Commands ────────────────────────────────────────────────────
 
-        private static void BuildPathFromCommands(string d, PathShape path)
+        // Splits an SVG path d-string into one PathShape per M sub-path.
+        private static List<PathShape> BuildSubPaths(string d)
         {
-            var tokens = TokenizePath(d);
-            int i      = 0;
-            Vector2 cur = Vector2.zero, start = Vector2.zero;
+            var result   = new List<PathShape>();
+            var tokens   = TokenizePath(d);
+            int i        = 0;
+            Vector2 cur  = Vector2.zero, start = Vector2.zero;
             Vector2 lastCtrl = Vector2.zero;
-            char    cmd  = 'M';
+            char cmd     = 'M';
+            PathShape path = null;
 
             while (i < tokens.Count)
             {
@@ -178,7 +253,9 @@ namespace VectorKit.Runtime
                     case 'M': case 'm':
                     {
                         var p = ReadVec2(tokens, ref i, cur, cmd == 'm');
-                        if (path.Points.Count > 0) path.Closed = false; // new sub-path
+                        // Each M starts a fresh sub-path
+                        if (path != null && path.Points.Count > 0) result.Add(path);
+                        path = new PathShape();
                         path.Points.Add(MakeLine(p));
                         cur = start = p;
                         cmd = cmd == 'm' ? 'l' : 'L';
@@ -186,6 +263,7 @@ namespace VectorKit.Runtime
                     }
                     case 'L': case 'l':
                     {
+                        if (path == null) path = new PathShape();
                         var p = ReadVec2(tokens, ref i, cur, cmd == 'l');
                         path.Points.Add(MakeLine(p));
                         cur = p;
@@ -193,6 +271,7 @@ namespace VectorKit.Runtime
                     }
                     case 'H': case 'h':
                     {
+                        if (path == null) path = new PathShape();
                         float x = ReadF(tokens, ref i);
                         var p = cmd == 'h' ? new Vector2(cur.x + x, cur.y) : new Vector2(x, cur.y);
                         path.Points.Add(MakeLine(p));
@@ -201,6 +280,7 @@ namespace VectorKit.Runtime
                     }
                     case 'V': case 'v':
                     {
+                        if (path == null) path = new PathShape();
                         float y = ReadF(tokens, ref i);
                         var p = cmd == 'v' ? new Vector2(cur.x, cur.y - y) : new Vector2(cur.x, -y);
                         path.Points.Add(MakeLine(p));
@@ -209,52 +289,52 @@ namespace VectorKit.Runtime
                     }
                     case 'C': case 'c':
                     {
+                        if (path == null) path = new PathShape();
                         var c1 = ReadVec2(tokens, ref i, cur, cmd == 'c');
                         var c2 = ReadVec2(tokens, ref i, cur, cmd == 'c');
                         var p  = ReadVec2(tokens, ref i, cur, cmd == 'c');
                         path.Points.Add(MakeBezier(p, c1, c2));
-                        lastCtrl = c2;
-                        cur = p;
+                        lastCtrl = c2; cur = p;
                         break;
                     }
                     case 'S': case 's':
                     {
+                        if (path == null) path = new PathShape();
                         var c1 = ReflectCtrl(lastCtrl, cur);
                         var c2 = ReadVec2(tokens, ref i, cur, cmd == 's');
                         var p  = ReadVec2(tokens, ref i, cur, cmd == 's');
                         path.Points.Add(MakeBezier(p, c1, c2));
-                        lastCtrl = c2;
-                        cur = p;
+                        lastCtrl = c2; cur = p;
                         break;
                     }
                     case 'Q': case 'q':
                     {
+                        if (path == null) path = new PathShape();
                         var qc = ReadVec2(tokens, ref i, cur, cmd == 'q');
                         var p  = ReadVec2(tokens, ref i, cur, cmd == 'q');
-                        // Elevate quadratic to cubic
                         var c1 = cur + (qc - cur) * (2f / 3f);
                         var c2 = p   + (qc - p)   * (2f / 3f);
                         path.Points.Add(MakeBezier(p, c1, c2));
-                        lastCtrl = qc;
-                        cur = p;
+                        lastCtrl = qc; cur = p;
                         break;
                     }
                     case 'T': case 't':
                     {
+                        if (path == null) path = new PathShape();
                         var qc = ReflectCtrl(lastCtrl, cur);
                         var p  = ReadVec2(tokens, ref i, cur, cmd == 't');
                         var c1 = cur + (qc - cur) * (2f / 3f);
                         var c2 = p   + (qc - p)   * (2f / 3f);
                         path.Points.Add(MakeBezier(p, c1, c2));
-                        lastCtrl = qc;
-                        cur = p;
+                        lastCtrl = qc; cur = p;
                         break;
                     }
                     case 'A': case 'a':
+                        if (path == null) path = new PathShape();
                         ArcToBezier(tokens, ref i, ref cur, cmd == 'a', path);
                         break;
                     case 'Z': case 'z':
-                        path.Closed = true;
+                        if (path != null) path.Closed = true;
                         cur = start;
                         break;
                     default:
@@ -262,6 +342,8 @@ namespace VectorKit.Runtime
                         break;
                 }
             }
+            if (path != null && path.Points.Count > 0) result.Add(path);
+            return result;
         }
 
         // Converts SVG arc to 1-4 cubic bezier segments (endpoint → center parameterization).
@@ -273,15 +355,20 @@ namespace VectorKit.Runtime
             float xRot = ReadF(tokens, ref i) * Mathf.Deg2Rad;
             bool  large = ReadF(tokens, ref i) != 0;
             bool  sweep = ReadF(tokens, ref i) != 0;
-            var   p2   = ReadVec2(tokens, ref i, cur, rel);
+            var   p2   = ReadVec2(tokens, ref i, cur, rel);   // Unity space (y-up)
 
             if (Vector2.Distance(cur, p2) < 0.001f) { cur = p2; return; }
 
             rx = Mathf.Abs(rx); ry = Mathf.Abs(ry);
             if (rx < 0.001f || ry < 0.001f) { path.Points.Add(MakeLine(p2)); cur = p2; return; }
 
+            // SVG arc parameterization is defined for y-down coordinates.
+            // cur and p2 are Unity-space (y-up) — flip Y for the computation.
+            float x1 = cur.x, y1 = -cur.y;
+            float x2 = p2.x,  y2 = -p2.y;
+
             float cos = Mathf.Cos(xRot), sin = Mathf.Sin(xRot);
-            float dx2 = (cur.x - p2.x) * 0.5f, dy2 = (cur.y - p2.y) * 0.5f;
+            float dx2 = (x1 - x2) * 0.5f, dy2 = (y1 - y2) * 0.5f;
             float x1p =  cos * dx2 + sin * dy2;
             float y1p = -sin * dx2 + cos * dy2;
 
@@ -297,8 +384,8 @@ namespace VectorKit.Runtime
 
             float cxp =  sq * rx * y1p / ry;
             float cyp = -sq * ry * x1p / rx;
-            float cx  = cos * cxp - sin * cyp + (cur.x + p2.x) * 0.5f;
-            float cy  = sin * cxp + cos * cyp + (cur.y + p2.y) * 0.5f;
+            float cx  = cos * cxp - sin * cyp + (x1 + x2) * 0.5f;
+            float cy  = sin * cxp + cos * cyp + (y1 + y2) * 0.5f;
 
             float ux = (x1p - cxp) / rx, uy = (y1p - cyp) / ry;
             float vx = -(x1p + cxp) / rx, vy = -(y1p + cyp) / ry;
@@ -311,6 +398,7 @@ namespace VectorKit.Runtime
             float dSeg  = dTheta / segs;
             float alpha = Mathf.Sin(dSeg) * (Mathf.Sqrt(4f + 3f * Mathf.Tan(dSeg * 0.5f) * Mathf.Tan(dSeg * 0.5f)) - 1f) / 3f;
 
+            // ArcPoint and ArcDeriv work in SVG space (y-down, using cx/cy from SVG-space computation).
             Vector2 ArcPoint(float t) {
                 float xp = rx * Mathf.Cos(t), yp = ry * Mathf.Sin(t);
                 return new Vector2(cos * xp - sin * yp + cx, sin * xp + cos * yp + cy);
@@ -321,50 +409,72 @@ namespace VectorKit.Runtime
             }
 
             float t = theta1;
-            Vector2 p1Cur = cur;
+            Vector2 p1CurSVG = new Vector2(x1, y1);   // track current point in SVG space
             for (int s = 0; s < segs; s++)
             {
                 float t2 = t + dSeg;
                 var d1 = ArcDeriv(t);
                 var d2 = ArcDeriv(t2);
-                var ep = ArcPoint(t2);
-                var c1 = p1Cur + d1 * alpha;
-                var c2 = ep    - d2 * alpha;
-                path.Points.Add(MakeBezier(new Vector2(ep.x, -ep.y), new Vector2(c1.x, -c1.y), new Vector2(c2.x, -c2.y)));
-                t    = t2;
-                p1Cur = ep;
+                var ep = ArcPoint(t2);                     // SVG space
+                var c1 = p1CurSVG + d1 * alpha;            // SVG space
+                var c2 = ep        - d2 * alpha;            // SVG space
+                // Convert SVG-space (y-down) back to Unity-space (y-up)
+                path.Points.Add(MakeBezier(
+                    new Vector2(ep.x, -ep.y),
+                    new Vector2(c1.x, -c1.y),
+                    new Vector2(c2.x, -c2.y)));
+                t = t2;
+                p1CurSVG = ep;
             }
-            cur = p2;
+            cur = p2;   // already Unity space
         }
 
         // ── Presentation (fill/stroke) ───────────────────────────────────────────
 
-        private static void ApplyPresentation(XElement el, ShapeData data)
+        private static void ApplyPresentation(PresentContext ctx, ShapeData data)
         {
-            string fill    = Attr(el, "fill")         ?? "black";
-            string stroke  = Attr(el, "stroke")       ?? "none";
-            float  opacity = FA(el, "opacity", 1f);
-            float  fillOp  = FA(el, "fill-opacity",   1f) * opacity;
-            float  strkOp  = FA(el, "stroke-opacity", 1f) * opacity;
-            float  strkW   = FA(el, "stroke-width",   1f);
+            float totalOpacity = ctx.Opacity;
+            float fillOp  = ctx.FillOpacity  * totalOpacity;
+            float strkOp  = ctx.StrokeOpacity * totalOpacity;
 
-            if (fill != "none")
+            bool hasFill   = ctx.Fill   != "none" && !string.IsNullOrEmpty(ctx.Fill);
+            bool hasStroke = ctx.Stroke != "none" && !string.IsNullOrEmpty(ctx.Stroke);
+
+            if (hasFill)
             {
-                var c = ParseColor(fill);
+                var c = ParseColor(ctx.Fill);
                 c.a *= fillOp;
                 data.Fills.Add(new FillLayer { Fill = new SolidFill { Color = c } });
             }
 
-            if (stroke != "none")
+            if (hasStroke)
             {
-                var c = ParseColor(stroke);
+                var c = ParseColor(ctx.Stroke);
                 c.a *= strkOp;
-                data.Strokes.Add(new StrokeLayer
+                float strkW = ctx.StrokeWidth;
+
+                // For PathShape with no fill: encode the stroke as path thickness + fill layer.
+                // This gives a correct band-around-path rendering via the SDF fill formula,
+                // avoiding the open-path stroke formula artefacts.
+                if (!hasFill && data.Shape is PathShape ps)
                 {
-                    Fill      = new SolidFill { Color = c },
-                    Width     = strkW,
-                    Alignment = StrokeAlignment.Center,
-                });
+                    ps.Thickness = strkW;
+                    ps.EdgeSoftness = Mathf.Min(ps.EdgeSoftness, strkW * 0.5f);
+                    data.Fills.Add(new FillLayer { Fill = new SolidFill { Color = c } });
+                    // Pad size by stroke width so the rect mesh fully covers the stroke band.
+                    data.Size = new Vector2(
+                        Mathf.Max(data.Size.x, 0.01f) + strkW * 2f,
+                        Mathf.Max(data.Size.y, 0.01f) + strkW * 2f);
+                }
+                else
+                {
+                    data.Strokes.Add(new StrokeLayer
+                    {
+                        Fill      = new SolidFill { Color = c },
+                        Width     = strkW,
+                        Alignment = StrokeAlignment.Center,
+                    });
+                }
             }
         }
 

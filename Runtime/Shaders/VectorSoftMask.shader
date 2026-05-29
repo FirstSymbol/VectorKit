@@ -63,8 +63,8 @@ Shader "VectorKit/SoftMaskedImage"
             float4 _MaskBoolTransform [16];
             float4 _MaskBoolSize      [16];
 
-            struct appdata { float4 vertex : POSITION; float4 color : COLOR; float2 uv : TEXCOORD0; float4 uv1 : TEXCOORD1; };
-            struct v2f     { float4 vertex : SV_POSITION; fixed4 color : COLOR; float2 uv : TEXCOORD0; float4 localPos : TEXCOORD1; float4 worldPos : TEXCOORD2; };
+            struct appdata { float4 vertex : POSITION; float4 color : COLOR; float2 uv : TEXCOORD0; };
+            struct v2f     { float4 vertex : SV_POSITION; fixed4 color : COLOR; float2 uv : TEXCOORD0; float4 worldPos : TEXCOORD1; };
 
             v2f vert(appdata v)
             {
@@ -72,8 +72,7 @@ Shader "VectorKit/SoftMaskedImage"
                 o.vertex   = UnityObjectToClipPos(v.vertex);
                 o.color    = v.color;
                 o.uv       = v.uv;
-                o.localPos = v.uv1;
-                o.worldPos = v.vertex;
+                o.worldPos = mul(unity_ObjectToWorld, v.vertex);
                 return o;
             }
 
@@ -84,7 +83,7 @@ Shader "VectorKit/SoftMaskedImage"
                 if (_MaskParams.x > 0.5)
                 {
                     float4x4 lm = float4x4(_MaskMatrixX, _MaskMatrixY, _MaskMatrixZ, _MaskMatrixW);
-                    float2 mp = mul(lm, float4(i.localPos.xy, 0.0, 1.0)).xy;
+                    float2 mp = mul(lm, i.worldPos).xy;
                     float mD = GetBasicSDF(mp, _MaskSize.xy * 0.5, _MaskParams.y, _MaskParams.z, _MaskShape, false);
 
                     int mbc = _MaskBoolParams;

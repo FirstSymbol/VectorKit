@@ -403,8 +403,6 @@ Shader "VectorKit/Shape"
                     float bevelDist = blur; // blur channel reused for bevel distance
                     float2 bDir = float2(cos(i.extraData.z), sin(i.extraData.z));
 
-                    // 2D gradient estimation gives correct bevel for any shape including
-                    // complex SDF with smin regions (star inner rounding, boolean ops, etc.)
                     float eps = max(1.0, min(bevelDist, 3.0));
                     float2 ep = float2(eps, 0);
                     float dx = GetMainSDF_Opt(p_orig + noiseOff + ep.xy, halfSize, customSmooth, i.shapeParams, i)
@@ -414,8 +412,13 @@ Shader "VectorKit/Shape"
                     float2 grad = float2(dx, dy) * (0.5 / eps);
 
                     float lightness = dot(grad, bDir);
-                    float highlight = saturate( lightness) * spread;
-                    float shadow    = saturate(-lightness) * i.extraData.w;
+
+                    // Fade bevel toward the shape interior to eliminate Voronoi-like
+                    // gradient discontinuities that appear deep inside concave shapes (star, etc.)
+                    float bevelWeight = 1.0 - saturate((abs(d_orig) - eps) / max(bevelDist - eps, 0.001));
+
+                    float highlight = saturate( lightness) * spread        * bevelWeight;
+                    float shadow    = saturate(-lightness) * i.extraData.w * bevelWeight;
 
                     float baseMask  = smoothstep(aa, -aa, d_orig);
                     if (baseMask <= 0.001) discard;
