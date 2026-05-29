@@ -98,11 +98,29 @@ Shader "VectorKit/SoftMaskedImage"
                         else                               mD = hard_op(mD, md2, _MaskBoolOpType[mk].x);
                     }
 
-                    float feather = _MaskParams.w;
-                    float mAlpha  = smoothstep(max(0.001, feather), -max(0.001, feather), mD);
-                    float mRow    = _MaskFillParams.w;
+                    float feather    = _MaskParams.w;
+                    float mAlpha     = smoothstep(max(0.001, feather), -max(0.001, feather), mD);
+                    float mFillType  = _MaskFillParams.x;
+                    float mRow       = _MaskFillParams.w;
+                    float mt         = 0.5;
+                    float2 mHS       = _MaskSize.xy * 0.5;
+                    if (mFillType > 0.5)
+                    {
+                        float2 mgp = (mp - (mHS * _MaskFillOffset.xy)) / max(_MaskFillParams.z, 0.001);
+                        if (mFillType < 1.5)
+                        {
+                            float rad = _MaskFillParams.y * 0.0174533;
+                            float2 dir = float2(cos(rad), sin(rad));
+                            mt = (dot(mgp, dir) / max(abs(dir.x * mHS.x) + abs(dir.y * mHS.y), 0.001)) * 0.5 + 0.5;
+                        }
+                        else if (mFillType < 2.5)
+                            mt = length(mgp) / max(max(mHS.x, mHS.y), 0.001);
+                        else if (mFillType < 3.5)
+                            mt = frac((atan2(mgp.y, mgp.x) - _MaskFillParams.y * 0.0174533) / 6.28318 + 0.5);
+                    }
                     float mVCoord = (mRow * 3.0 + 1.5) * _AtlasHeightInv;
-                    float mFillA  = tex2D(_MaskTex, float2(0.5, mVCoord)).a;
+                    float mFillA  = (mFillType > 0.5) ? tex2D(_MaskTex, float2(saturate(mt), mVCoord)).a
+                                                       : tex2D(_MaskTex, float2(0.5, mVCoord)).a;
                     c.a  *= mAlpha * mFillA * _MaskFillOffset.z;
                     c.rgb = c.rgb * c.a;
                 }

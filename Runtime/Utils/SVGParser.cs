@@ -160,8 +160,9 @@ namespace VectorKit.Runtime
                 for (int pi = 0; pi < path.Points.Count; pi++)
                 {
                     var pt = path.Points[pi];
-                    pt.Position -= center;
-                    if (pt.Type == PathPointType.Bezier) { pt.ControlPoint1 -= center; pt.ControlPoint2 -= center; }
+                    pt.Position      -= center;
+                    pt.ControlPoint1 -= center;
+                    pt.ControlPoint2 -= center;
                     path.Points[pi] = pt;
                 }
                 yield return new ShapeData { Shape = path, Size = size, Position = center };
@@ -233,6 +234,11 @@ namespace VectorKit.Runtime
         // ── SVG Path Commands ────────────────────────────────────────────────────
 
         // Splits an SVG path d-string into one PathShape per M sub-path.
+        // PathPoint convention used here:
+        //   ControlPoint2 = OUT handle (c1 of the outgoing bezier, stored on the START point of that bezier)
+        //   ControlPoint1 = IN  handle (c2 of the incoming bezier, stored on the END   point of that bezier)
+        // This matches PathFlattener which reads:
+        //   SubdivideCubic(prev.Position, prev.ControlPoint2, curr.ControlPoint1, curr.Position)
         private static List<PathShape> BuildSubPaths(string d)
         {
             var result   = new List<PathShape>();
@@ -253,11 +259,10 @@ namespace VectorKit.Runtime
                     case 'M': case 'm':
                     {
                         var p = ReadVec2(tokens, ref i, cur, cmd == 'm');
-                        // Each M starts a fresh sub-path
                         if (path != null && path.Points.Count > 0) result.Add(path);
                         path = new PathShape();
                         path.Points.Add(MakeLine(p));
-                        cur = start = p;
+                        cur = start = p; lastCtrl = cur;
                         cmd = cmd == 'm' ? 'l' : 'L';
                         break;
                     }
@@ -266,7 +271,7 @@ namespace VectorKit.Runtime
                         if (path == null) path = new PathShape();
                         var p = ReadVec2(tokens, ref i, cur, cmd == 'l');
                         path.Points.Add(MakeLine(p));
-                        cur = p;
+                        cur = p; lastCtrl = cur;
                         break;
                     }
                     case 'H': case 'h':
@@ -275,7 +280,7 @@ namespace VectorKit.Runtime
                         float x = ReadF(tokens, ref i);
                         var p = cmd == 'h' ? new Vector2(cur.x + x, cur.y) : new Vector2(x, cur.y);
                         path.Points.Add(MakeLine(p));
-                        cur = p;
+                        cur = p; lastCtrl = cur;
                         break;
                     }
                     case 'V': case 'v':
@@ -284,7 +289,7 @@ namespace VectorKit.Runtime
                         float y = ReadF(tokens, ref i);
                         var p = cmd == 'v' ? new Vector2(cur.x, cur.y - y) : new Vector2(cur.x, -y);
                         path.Points.Add(MakeLine(p));
-                        cur = p;
+                        cur = p; lastCtrl = cur;
                         break;
                     }
                     case 'C': case 'c':
@@ -293,17 +298,19 @@ namespace VectorKit.Runtime
                         var c1 = ReadVec2(tokens, ref i, cur, cmd == 'c');
                         var c2 = ReadVec2(tokens, ref i, cur, cmd == 'c');
                         var p  = ReadVec2(tokens, ref i, cur, cmd == 'c');
-                        path.Points.Add(MakeBezier(p, c1, c2));
+                        SetPrevCP2(path, c1);   // c1 = OUT handle of the start point
+                        AddBezierPoint(path, p, c2);  // c2 = IN handle of the end point
                         lastCtrl = c2; cur = p;
                         break;
                     }
                     case 'S': case 's':
                     {
                         if (path == null) path = new PathShape();
-                        var c1 = ReflectCtrl(lastCtrl, cur);
+                        var c1 = ReflectCtrl(lastCtrl, cur);  // reflect IN handle of previous end = OUT handle of cur
                         var c2 = ReadVec2(tokens, ref i, cur, cmd == 's');
                         var p  = ReadVec2(tokens, ref i, cur, cmd == 's');
-                        path.Points.Add(MakeBezier(p, c1, c2));
+                        SetPrevCP2(path, c1);
+                        AddBezierPoint(path, p, c2);
                         lastCtrl = c2; cur = p;
                         break;
                     }
@@ -312,9 +319,10 @@ namespace VectorKit.Runtime
                         if (path == null) path = new PathShape();
                         var qc = ReadVec2(tokens, ref i, cur, cmd == 'q');
                         var p  = ReadVec2(tokens, ref i, cur, cmd == 'q');
-                        var c1 = cur + (qc - cur) * (2f / 3f);
-                        var c2 = p   + (qc - p)   * (2f / 3f);
-                        path.Points.Add(MakeBezier(p, c1, c2));
+                        var c1 = cur + (qc - cur) * (2f / 3f);  // OUT handle of start
+                        var c2 = p   + (qc - p)   * (2f / 3f);  // IN  handle of end
+                        SetPrevCP2(path, c1);
+                        AddBezierPoint(path, p, c2);
                         lastCtrl = qc; cur = p;
                         break;
                     }
@@ -325,17 +333,19 @@ namespace VectorKit.Runtime
                         var p  = ReadVec2(tokens, ref i, cur, cmd == 't');
                         var c1 = cur + (qc - cur) * (2f / 3f);
                         var c2 = p   + (qc - p)   * (2f / 3f);
-                        path.Points.Add(MakeBezier(p, c1, c2));
+                        SetPrevCP2(path, c1);
+                        AddBezierPoint(path, p, c2);
                         lastCtrl = qc; cur = p;
                         break;
                     }
                     case 'A': case 'a':
                         if (path == null) path = new PathShape();
                         ArcToBezier(tokens, ref i, ref cur, cmd == 'a', path);
+                        lastCtrl = cur;
                         break;
                     case 'Z': case 'z':
                         if (path != null) path.Closed = true;
-                        cur = start;
+                        cur = start; lastCtrl = cur;
                         break;
                     default:
                         i++;
@@ -344,6 +354,27 @@ namespace VectorKit.Runtime
             }
             if (path != null && path.Points.Count > 0) result.Add(path);
             return result;
+        }
+
+        // Sets the ControlPoint2 (OUT handle) of the last point in the path.
+        private static void SetPrevCP2(PathShape path, Vector2 cp2)
+        {
+            if (path.Points.Count == 0) return;
+            var pt = path.Points[path.Points.Count - 1];
+            pt.ControlPoint2 = cp2;
+            path.Points[path.Points.Count - 1] = pt;
+        }
+
+        // Adds a bezier end-point: ControlPoint1 = IN handle (c2), ControlPoint2 = placeholder.
+        private static void AddBezierPoint(PathShape path, Vector2 pos, Vector2 inHandle)
+        {
+            path.Points.Add(new PathPoint
+            {
+                Position      = pos,
+                ControlPoint1 = inHandle,
+                ControlPoint2 = pos,   // placeholder; overwritten by next bezier segment's SetPrevCP2
+                Type          = PathPointType.Bezier,
+            });
         }
 
         // Converts SVG arc to 1-4 cubic bezier segments (endpoint → center parameterization).
@@ -415,14 +446,12 @@ namespace VectorKit.Runtime
                 float t2 = t + dSeg;
                 var d1 = ArcDeriv(t);
                 var d2 = ArcDeriv(t2);
-                var ep = ArcPoint(t2);                     // SVG space
-                var c1 = p1CurSVG + d1 * alpha;            // SVG space
-                var c2 = ep        - d2 * alpha;            // SVG space
-                // Convert SVG-space (y-down) back to Unity-space (y-up)
-                path.Points.Add(MakeBezier(
-                    new Vector2(ep.x, -ep.y),
-                    new Vector2(c1.x, -c1.y),
-                    new Vector2(c2.x, -c2.y)));
+                var ep  = ArcPoint(t2);            // SVG space end point
+                var c1  = p1CurSVG + d1 * alpha;   // SVG space: OUT handle of start
+                var c2  = ep        - d2 * alpha;   // SVG space: IN  handle of end
+                // Convert SVG-space (y-down) to Unity-space (y-up) and store with correct convention
+                SetPrevCP2(path, new Vector2(c1.x, -c1.y));        // c1 → OUT handle of previous point
+                AddBezierPoint(path, new Vector2(ep.x, -ep.y), new Vector2(c2.x, -c2.y));
                 t = t2;
                 p1CurSVG = ep;
             }
@@ -496,11 +525,21 @@ namespace VectorKit.Runtime
             float maxX = float.MinValue, maxY = float.MinValue;
             foreach (var pt in ps.Points)
             {
-                minX = Mathf.Min(minX, pt.Position.x); maxX = Mathf.Max(maxX, pt.Position.x);
-                minY = Mathf.Min(minY, pt.Position.y); maxY = Mathf.Max(maxY, pt.Position.y);
+                Expand(ref minX, ref maxX, ref minY, ref maxY, pt.Position);
+                if (pt.Type == PathPointType.Bezier)
+                {
+                    Expand(ref minX, ref maxX, ref minY, ref maxY, pt.ControlPoint1);
+                    Expand(ref minX, ref maxX, ref minY, ref maxY, pt.ControlPoint2);
+                }
             }
             center = new Vector2((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
             return new Vector2(maxX - minX, maxY - minY);
+        }
+
+        private static void Expand(ref float minX, ref float maxX, ref float minY, ref float maxY, Vector2 p)
+        {
+            if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+            if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
         }
 
         private static Vector2 EstimatePathBounds(PathShape ps)

@@ -43,10 +43,11 @@ namespace VectorKit.Runtime
             // Offset each shape position to convert from SVG space to canvas-center space.
             var vbHalf = doc.ViewBox * 0.5f;
 
+            int shapeIndex = 0;
             foreach (var shape in doc.Shapes)
             {
-                string name = string.IsNullOrEmpty(shape.Id) ? "Shape" : shape.Id;
-                var go = new GameObject(name);
+                string displayName = string.IsNullOrEmpty(shape.Id) ? $"Shape_{shapeIndex}" : shape.Id;
+                var go = new GameObject(displayName);
                 go.transform.SetParent(root.transform, false);
 
                 // shape.Position is (svgCenterX, -svgCenterY); subtract viewBox half to center
@@ -77,7 +78,8 @@ namespace VectorKit.Runtime
                     ws.Strokes = shape.Strokes;
                 }
 
-                ctx.AddObjectToAsset(name, go);
+                ctx.AddObjectToAsset($"shape_{shapeIndex}", go);
+                shapeIndex++;
             }
 
             ctx.AddObjectToAsset("prefab", root);

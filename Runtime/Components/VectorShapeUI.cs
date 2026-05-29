@@ -40,6 +40,7 @@ namespace VectorKit.Runtime
         private readonly List<int>         _atlasRows = new List<int>();
         private Material _pooledMat;
         private bool     _stateDirty;
+        private int      _maskFillAtlasRow;
 
         private static Material s_DefaultMat;
 
@@ -136,12 +137,14 @@ namespace VectorKit.Runtime
             base.OnDestroy();
             ReleaseAtlasRows();
             ReleaseMaterial();
+            ReleaseMaskAtlasRow();
         }
 
         protected override void OnDisable()
         {
             base.OnDisable();
             ReleaseMaterial();
+            ReleaseMaskAtlasRow();
         }
 
 #if UNITY_EDITOR
@@ -158,6 +161,8 @@ namespace VectorKit.Runtime
 
         private void ApplySoftMaskToState()
         {
+            ReleaseMaskAtlasRow();
+
             if (SoftMaskSource == null) { _state.HasMask = false; return; }
 
             var maskShape = SoftMaskSource.Shape;
@@ -179,14 +184,38 @@ namespace VectorKit.Runtime
             _state.MaskShape  = maskShape.PackShaderParams();
             _state.MaskTex    = GradientAtlas.Texture;
 
-            // Solid fill only for mask; gradient fills are not yet supported
             float opacity = SoftMaskSource.ShapeOpacity;
-            var fills = SoftMaskSource.Fills;
-            if (fills != null && fills.Count > 0 && fills[0]?.Fill is SolidFill sf)
-                opacity *= sf.Color.a;
+            var fills     = SoftMaskSource.Fills;
+            var firstFill = (fills != null && fills.Count > 0) ? fills[0]?.Fill : null;
 
-            _state.MaskFillParams = Vector4.zero;  // fillType=0 (solid), atlasRow=0 (sentinel white)
-            _state.MaskFillOffset = new Vector4(0f, 0f, opacity, 0f);
+            switch (firstFill)
+            {
+                case LinearGradientFill lgf:
+                    _maskFillAtlasRow     = GradientAtlas.Acquire(lgf);
+                    _state.MaskFillParams = new Vector4((float)FillKind.LinearGradient, lgf.Angle, lgf.Scale, _maskFillAtlasRow);
+                    _state.MaskFillOffset = new Vector4(0f, 0f, opacity, 0f);
+                    break;
+                case RadialGradientFill rgf:
+                    _maskFillAtlasRow     = GradientAtlas.Acquire(rgf);
+                    _state.MaskFillParams = new Vector4((float)FillKind.RadialGradient, 0f, rgf.Radius, _maskFillAtlasRow);
+                    _state.MaskFillOffset = new Vector4(0f, 0f, opacity, 0f);
+                    break;
+                case ConicGradientFill cgf:
+                    _maskFillAtlasRow     = GradientAtlas.Acquire(cgf);
+                    _state.MaskFillParams = new Vector4((float)FillKind.ConicGradient, cgf.StartAngle, 1f, _maskFillAtlasRow);
+                    _state.MaskFillOffset = new Vector4(0f, 0f, opacity, 0f);
+                    break;
+                default: // SolidFill or null
+                    if (firstFill is SolidFill sf) opacity *= sf.Color.a;
+                    _state.MaskFillParams = Vector4.zero;
+                    _state.MaskFillOffset = new Vector4(0f, 0f, opacity, 0f);
+                    break;
+            }
+        }
+
+        private void ReleaseMaskAtlasRow()
+        {
+            if (_maskFillAtlasRow > 0) { GradientAtlas.Release(_maskFillAtlasRow); _maskFillAtlasRow = 0; }
         }
 
         private void ReleaseAtlasRows()

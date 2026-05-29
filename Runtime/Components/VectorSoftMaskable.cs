@@ -162,13 +162,45 @@ namespace VectorKit.Runtime
             mat.SetTexture("_MaskTex",    GradientAtlas.Texture != null ? GradientAtlas.Texture : Texture2D.whiteTexture);
             mat.SetFloat("_AtlasHeightInv", GradientAtlas.HeightInverse);
 
-            float opacity = _maskSource.ShapeOpacity;
-            var fills = _maskSource.Fills;
-            if (fills != null && fills.Count > 0 && fills[0]?.Fill is SolidFill sf)
-                opacity *= sf.Color.a;
+            float opacity  = _maskSource.ShapeOpacity;
+            var fills      = _maskSource.Fills;
+            var firstFill  = (fills != null && fills.Count > 0) ? fills[0]?.Fill : null;
 
-            mat.SetVector("_MaskFillParams", Vector4.zero);
-            mat.SetVector("_MaskFillOffset", new Vector4(0f, 0f, opacity, 0f));
+            Vector4 maskFillParams = Vector4.zero;
+            Vector4 maskFillOffset = new Vector4(0f, 0f, opacity, 0f);
+
+            // For gradient fills: Acquire the atlas row (mask source already holds its own ref,
+            // so refcount goes 1→2→1 — safe to read the row number without leaking).
+            switch (firstFill)
+            {
+                case SolidFill sf:
+                    maskFillOffset = new Vector4(0f, 0f, opacity * sf.Color.a, 0f);
+                    break;
+                case LinearGradientFill lgf:
+                {
+                    int row = GradientAtlas.Acquire(lgf);
+                    maskFillParams = new Vector4((float)FillKind.LinearGradient, lgf.Angle, lgf.Scale, row);
+                    GradientAtlas.Release(row); // mask source holds its own ref; row stays valid
+                    break;
+                }
+                case RadialGradientFill rgf:
+                {
+                    int row = GradientAtlas.Acquire(rgf);
+                    maskFillParams = new Vector4((float)FillKind.RadialGradient, 0f, rgf.Radius, row);
+                    GradientAtlas.Release(row);
+                    break;
+                }
+                case ConicGradientFill cgf:
+                {
+                    int row = GradientAtlas.Acquire(cgf);
+                    maskFillParams = new Vector4((float)FillKind.ConicGradient, cgf.StartAngle, 1f, row);
+                    GradientAtlas.Release(row);
+                    break;
+                }
+            }
+
+            mat.SetVector("_MaskFillParams", maskFillParams);
+            mat.SetVector("_MaskFillOffset", maskFillOffset);
             mat.SetInt("_MaskBoolParams", 0);
         }
 
