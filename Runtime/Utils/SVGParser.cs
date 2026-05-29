@@ -526,24 +526,55 @@ namespace VectorKit.Runtime
             int count = ps.Points.Count;
             for (int i = 0; i < count; i++)
             {
-                var pt = ps.Points[i];
-                Expand(ref minX, ref maxX, ref minY, ref maxY, pt.Position);
-                // Include IN handle for bezier endpoints
-                if (pt.Type == PathPointType.Bezier)
-                    Expand(ref minX, ref maxX, ref minY, ref maxY, pt.ControlPoint1);
-                // Include OUT handle whenever the next segment is a bezier (point may be Line-typed start)
-                bool nextIsBezier = (i + 1 < count && ps.Points[i + 1].Type == PathPointType.Bezier);
-                if (pt.Type == PathPointType.Bezier || nextIsBezier)
-                    Expand(ref minX, ref maxX, ref minY, ref maxY, pt.ControlPoint2);
-            }
-            // Closed path: include handles for the wrap-around segment (last → first)
-            if (ps.Closed && count >= 2 && ps.Points[0].Type == PathPointType.Bezier)
-            {
-                Expand(ref minX, ref maxX, ref minY, ref maxY, ps.Points[count - 1].ControlPoint2);
-                Expand(ref minX, ref maxX, ref minY, ref maxY, ps.Points[0].ControlPoint1);
+                Expand(ref minX, ref maxX, ref minY, ref maxY, ps.Points[i].Position);
+                int nextIdx = i + 1;
+                if (nextIdx >= count) { if (ps.Closed && count >= 2) nextIdx = 0; else continue; }
+                var curr = ps.Points[i];
+                var next = ps.Points[nextIdx];
+                // For bezier segments use analytic extrema (accurate bounds, not control-point hull).
+                if (next.Type == PathPointType.Bezier)
+                    ExpandCubicBezierExtrema(ref minX, ref maxX, ref minY, ref maxY,
+                        curr.Position, curr.ControlPoint2, next.ControlPoint1, next.Position);
             }
             center = new Vector2((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
             return new Vector2(maxX - minX, maxY - minY);
+        }
+
+        private static void ExpandCubicBezierExtrema(
+            ref float minX, ref float maxX, ref float minY, ref float maxY,
+            Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3)
+        {
+            ExpandCubicAxisExtrema(ref minX, ref maxX, p0.x, p1.x, p2.x, p3.x);
+            ExpandCubicAxisExtrema(ref minY, ref maxY, p0.y, p1.y, p2.y, p3.y);
+        }
+
+        // Solves dB/dt = 0 for one axis and expands the bounds at any interior extremum.
+        private static void ExpandCubicAxisExtrema(ref float mn, ref float mx, float p0, float p1, float p2, float p3)
+        {
+            float a = p1 - p0, b = p2 - p1, c = p3 - p2;
+            // dB/dt = 3[At² + Bt + C] where A=a-2b+c, B=2(b-a), C=a
+            float A = a - 2f*b + c, B = 2f*(b - a), C = a;
+            if (Mathf.Abs(A) < 1e-7f)
+            {
+                if (Mathf.Abs(B) > 1e-7f) { float t = -C / B; if (t > 0f && t < 1f) ExpandCubicSample(ref mn, ref mx, p0, p1, p2, p3, t); }
+            }
+            else
+            {
+                float disc = B*B - 4f*A*C;
+                if (disc < 0f) return;
+                float sq = Mathf.Sqrt(disc);
+                float t1 = (-B + sq) / (2f*A), t2 = (-B - sq) / (2f*A);
+                if (t1 > 0f && t1 < 1f) ExpandCubicSample(ref mn, ref mx, p0, p1, p2, p3, t1);
+                if (t2 > 0f && t2 < 1f) ExpandCubicSample(ref mn, ref mx, p0, p1, p2, p3, t2);
+            }
+        }
+
+        private static void ExpandCubicSample(ref float mn, ref float mx, float p0, float p1, float p2, float p3, float t)
+        {
+            float mt = 1f - t;
+            float v = mt*mt*mt*p0 + 3f*mt*mt*t*p1 + 3f*mt*t*t*p2 + t*t*t*p3;
+            if (v < mn) mn = v;
+            if (v > mx) mx = v;
         }
 
         private static void Expand(ref float minX, ref float maxX, ref float minY, ref float maxY, Vector2 p)

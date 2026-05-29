@@ -163,10 +163,10 @@ namespace VectorKit.Runtime
                 if (shape is LineShape lsh)
                 {
                     sp1  = new Vector4(lsh.Start.x * sx, lsh.Start.y * sy, lsh.End.x * sx, lsh.End.y * sy);
-                    soft = lsh.Width * Mathf.Min(sx, sy);
+                    soft = lsh.Width;
                 }
                 else if (shape is PathShape psh)
-                    sp1 = new Vector4(psh.Closed ? 1f : 0f, psh.Thickness * Mathf.Min(sx, sy), 0f, 0f);
+                    sp1 = new Vector4(psh.Closed ? 1f : 0f, psh.Thickness, 0f, 0f);
             }
 
             // edge AA: controls smoothstep transition width at shape boundary
