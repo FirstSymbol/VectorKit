@@ -53,6 +53,11 @@ namespace VectorKit.Runtime
                 // shape.Position is (svgCenterX, -svgCenterY); subtract viewBox half to center
                 var unityPos = new Vector2(shape.Position.x - vbHalf.x, shape.Position.y + vbHalf.y);
 
+                // Coordinate-based shapes store their native half-size so they scale
+                // proportionally when the RectTransform is resized after import.
+                if (shape.Shape is PathShape || shape.Shape is LineShape)
+                    shape.Shape.NativeHalfSize = shape.Size * 0.5f;
+
                 if (UseUICanvas)
                 {
                     var rt    = go.AddComponent<RectTransform>();

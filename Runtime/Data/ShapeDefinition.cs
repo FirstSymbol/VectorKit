@@ -7,10 +7,13 @@ namespace VectorKit.Runtime
     [Serializable]
     public abstract class ShapeDefinition
     {
-        public Vector2 Scale     = Vector2.one;
-        public Vector2 Pivot     = new Vector2(0.5f, 0.5f);
-        public float   EdgeSoftness    = 1f;
+        public Vector2 Scale          = Vector2.one;
+        public Vector2 Pivot          = new Vector2(0.5f, 0.5f);
+        public float   EdgeSoftness   = 1f;
         public float   InternalPadding = 0f;
+        // Set by SVGImporter so coordinate-based shapes (Path, Line) scale with the RectTransform.
+        // Zero means fixed absolute coordinates (legacy / hand-authored shapes).
+        public Vector2 NativeHalfSize = Vector2.zero;
 
         public abstract ShapeKind Kind { get; }
 

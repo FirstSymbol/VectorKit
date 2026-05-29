@@ -76,6 +76,15 @@ namespace VectorKit.Runtime
                 state.ShapeKind = ShapeKind.Path;
                 var pts = new List<Vector2>();
                 PathFlattener.Flatten(ps, pts);
+
+                if (ps.NativeHalfSize.x > 0.001f && ps.NativeHalfSize.y > 0.001f)
+                {
+                    float sx = halfSize.x / ps.NativeHalfSize.x;
+                    float sy = halfSize.y / ps.NativeHalfSize.y;
+                    for (int j = 0; j < pts.Count; j++)
+                        pts[j] = new Vector2(pts[j].x * sx, pts[j].y * sy);
+                }
+
                 if (state.PathData == null) state.PathData = new Vector4[256];
                 state.PathPointCount = PathFlattener.PackIntoShaderArray(pts, state.PathData);
             }
@@ -144,6 +153,21 @@ namespace VectorKit.Runtime
             float soft = shape is RectangleShape rs ? rs.CornerSmoothing
                        : shape is LineShape ls ? ls.Width
                        : 0f;
+
+            // Scale coordinate-based shapes (Path, Line) to fit the current rect.
+            // NativeHalfSize is set at SVG import time; zero means no scaling (hand-authored shapes).
+            if (shape.NativeHalfSize.x > 0.001f && shape.NativeHalfSize.y > 0.001f)
+            {
+                float sx = hw / shape.NativeHalfSize.x;
+                float sy = hh / shape.NativeHalfSize.y;
+                if (shape is LineShape lsh)
+                {
+                    sp1  = new Vector4(lsh.Start.x * sx, lsh.Start.y * sy, lsh.End.x * sx, lsh.End.y * sy);
+                    soft = lsh.Width * Mathf.Min(sx, sy);
+                }
+                else if (shape is PathShape psh)
+                    sp1 = new Vector4(psh.Closed ? 1f : 0f, psh.Thickness * Mathf.Min(sx, sy), 0f, 0f);
+            }
 
             // edge AA: controls smoothstep transition width at shape boundary
             float aa = Mathf.Max(0.001f, shape.EdgeSoftness);
@@ -260,13 +284,14 @@ namespace VectorKit.Runtime
                 includeOffsetInUV: false);
         }
 
-        // Fill quads: normal.y = aa (edge softness)
+        // Fill quads: quad expanded by aa so the outward feather renders beyond the shape boundary.
+        // baseData still carries the original (hw,hh) so the SDF evaluates against the correct boundary.
         private static void AddFillQuad(
             VertexHelper vh, float hw, float hh,
             Vector4 sp1, float soft, int effectType, float pad,
             Vector4 fillParams, Color32 vertColor, float aa)
         {
-            AddQuad(vh, hw, hh, Vector2.zero, sp1,
+            AddQuad(vh, hw + aa, hh + aa, Vector2.zero, sp1,
                 new Vector4(hw, hh, soft, effectType),
                 fillParams,
                 new Vector3(pad, aa, 0),
