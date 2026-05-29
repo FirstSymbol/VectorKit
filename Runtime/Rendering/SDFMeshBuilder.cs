@@ -137,9 +137,16 @@ namespace VectorKit.Runtime
             IList<StrokeLayer> strokes, IList<VectorEffect> effects,
             List<int> outAtlasRows)
         {
-            Vector4 sp1  = shape.PackShaderParams();
-            float   soft = shape.EdgeSoftness;
-            float   pad  = shape.InternalPadding;
+            Vector4 sp1 = shape.PackShaderParams();
+            float   pad = shape.InternalPadding;
+
+            // uv2.z: shape-specific smoothing (corner style for rect, width for line)
+            float soft = shape is RectangleShape rs ? rs.CornerSmoothing
+                       : shape is LineShape ls ? ls.Width
+                       : 0f;
+
+            // edge AA: controls smoothstep transition width at shape boundary
+            float aa = Mathf.Max(0.001f, shape.EdgeSoftness);
 
             // 1. Drop shadows (behind everything)
             if (effects != null)
@@ -148,10 +155,9 @@ namespace VectorKit.Runtime
                     {
                         float exp = ds.Blur + Mathf.Max(0f, ds.Spread);
                         int   row = AcquireRow(ds.Fill, outAtlasRows);
-                        // UV0.xy includes offset, normal.xy = offset for shader to subtract
                         AddShadowQuad(vh, hw, hh, exp, ds.Offset, sp1, soft, ET_Shadow, pad,
                             FillParams(ds.Fill, row), VertColor(ds.Fill, tint, ds.Opacity),
-                            ds.Blur, ds.Spread);
+                            aa, ds.Blur, ds.Spread);
                     }
 
             // 2. Outer glows
@@ -163,7 +169,7 @@ namespace VectorKit.Runtime
                         int   row = AcquireRow(og.Fill, outAtlasRows);
                         AddShadowQuad(vh, hw, hh, exp, Vector2.zero, sp1, soft, ET_Shadow, pad,
                             FillParams(og.Fill, row), VertColor(og.Fill, tint, og.Opacity),
-                            og.Blur, og.Spread);
+                            aa, og.Blur, og.Spread);
                     }
 
             // 3. Fill layers (back to front)
@@ -173,18 +179,18 @@ namespace VectorKit.Runtime
                     {
                         int row = AcquireRow(f.Fill, outAtlasRows);
                         AddFillQuad(vh, hw, hh, sp1, soft, ET_Fill, pad,
-                            FillParams(f.Fill, row), VertColor(f.Fill, tint, f.Opacity));
+                            FillParams(f.Fill, row), VertColor(f.Fill, tint, f.Opacity), aa);
                     }
 
-            // 4. Inner shadows
+            // 4. Inner shadows — quad stays at origin so all shape pixels are covered
             if (effects != null)
                 foreach (var e in effects)
                     if (e is InnerShadowEffect ins && ins.Enabled)
                     {
                         int row = AcquireRow(ins.Fill, outAtlasRows);
-                        AddShadowQuad(vh, hw, hh, 0, ins.Offset, sp1, soft, ET_Inner, pad,
+                        AddInnerEffectQuad(vh, hw, hh, ins.Offset, sp1, soft, ET_Inner, pad,
                             FillParams(ins.Fill, row), VertColor(ins.Fill, tint, ins.Opacity),
-                            ins.Blur, ins.Spread);
+                            aa, ins.Blur, ins.Spread);
                     }
 
             // 5. Inner glows
@@ -193,9 +199,9 @@ namespace VectorKit.Runtime
                     if (e is InnerGlowEffect ing && ing.Enabled)
                     {
                         int row = AcquireRow(ing.Fill, outAtlasRows);
-                        AddShadowQuad(vh, hw, hh, 0, Vector2.zero, sp1, soft, ET_Inner, pad,
+                        AddInnerEffectQuad(vh, hw, hh, Vector2.zero, sp1, soft, ET_Inner, pad,
                             FillParams(ing.Fill, row), VertColor(ing.Fill, tint, ing.Opacity),
-                            ing.Blur, ing.Spread);
+                            aa, ing.Blur, ing.Spread);
                     }
 
             // 6. Stroke layers
@@ -209,14 +215,14 @@ namespace VectorKit.Runtime
                         int row = AcquireRow(s.Fill, outAtlasRows);
                         AddStrokeQuad(vh, hw, hh, exp, sp1, soft, pad,
                             FillParams(s.Fill, row), VertColor(s.Fill, tint, s.Opacity),
-                            s.Width * 0.5f, (float)s.Alignment, s.Dash, s.Gap);
+                            aa, s.Width * 0.5f, (float)s.Alignment, s.Dash, s.Gap);
                     }
 
             // 7. Bevel
             if (effects != null)
                 foreach (var e in effects)
                     if (e is BevelEffect bv && bv.Enabled)
-                        AddBevelQuad(vh, hw, hh, sp1, soft, pad, bv);
+                        AddBevelQuad(vh, hw, hh, sp1, soft, pad, bv, aa);
         }
 
         // ── Quad Specialisations ─────────────────────────────────────────────────
@@ -225,32 +231,45 @@ namespace VectorKit.Runtime
         private static void AddShadowQuad(
             VertexHelper vh, float hw, float hh, float expand,
             Vector2 offset, Vector4 sp1, float soft, int effectType, float pad,
-            Vector4 fillParams, Color32 vertColor, float blur, float spread)
+            Vector4 fillParams, Color32 vertColor, float aa, float blur, float spread)
         {
             float qw = hw + expand;
             float qh = hh + expand;
-            // normal.xy = offset (shader subtracts it from UV0.xy to get shape-relative pos)
-            // normal.z  = blur
-            // tangent.x = spread, tangent.y = AA=1
             AddQuad(vh, qw, qh, offset, sp1,
                 new Vector4(hw, hh, soft, effectType),
                 fillParams,
                 new Vector3(offset.x, offset.y, blur),
-                new Vector4(spread, 1f, 0, 0),
+                new Vector4(spread, aa, 0, 0),
                 vertColor, 0, 0,
                 includeOffsetInUV: true);
         }
 
-        // Fill/inner effect quads: normal.x = internalPadding
-        private static void AddFillQuad(
+        // Inner shadow/glow quads: quad stays at origin so every shape pixel is covered.
+        // The shadow offset is encoded in normal.xy (negated so shader's p-=normal gives p+offset).
+        private static void AddInnerEffectQuad(
             VertexHelper vh, float hw, float hh,
-            Vector4 sp1, float soft, int effectType, float pad,
-            Vector4 fillParams, Color32 vertColor)
+            Vector2 shadowOffset, Vector4 sp1, float soft, int effectType, float pad,
+            Vector4 fillParams, Color32 vertColor, float aa, float blur, float spread)
         {
             AddQuad(vh, hw, hh, Vector2.zero, sp1,
                 new Vector4(hw, hh, soft, effectType),
                 fillParams,
-                new Vector3(pad, 1f, 0),
+                new Vector3(-shadowOffset.x, -shadowOffset.y, blur),
+                new Vector4(spread, aa, 0, 0),
+                vertColor, 0, 0,
+                includeOffsetInUV: false);
+        }
+
+        // Fill quads: normal.y = aa (edge softness)
+        private static void AddFillQuad(
+            VertexHelper vh, float hw, float hh,
+            Vector4 sp1, float soft, int effectType, float pad,
+            Vector4 fillParams, Color32 vertColor, float aa)
+        {
+            AddQuad(vh, hw, hh, Vector2.zero, sp1,
+                new Vector4(hw, hh, soft, effectType),
+                fillParams,
+                new Vector3(pad, aa, 0),
                 new Vector4(0, 0, 0, 0),
                 vertColor, 0, 0,
                 includeOffsetInUV: false);
@@ -260,7 +279,7 @@ namespace VectorKit.Runtime
         private static void AddStrokeQuad(
             VertexHelper vh, float hw, float hh, float expand,
             Vector4 sp1, float soft, float pad,
-            Vector4 fillParams, Color32 vertColor,
+            Vector4 fillParams, Color32 vertColor, float aa,
             float strokeHW, float alignment, float dash, float gap)
         {
             float qw = hw + expand;
@@ -268,25 +287,25 @@ namespace VectorKit.Runtime
             AddQuad(vh, qw, qh, Vector2.zero, sp1,
                 new Vector4(hw, hh, soft, ET_Stroke),
                 fillParams,
-                new Vector3(pad, 1f, 0),
+                new Vector3(pad, aa, 0),
                 new Vector4(strokeHW, 0, 0, alignment),
                 vertColor, dash, gap,
                 includeOffsetInUV: false);
         }
 
-        // Bevel quads
+        // Bevel quads: normal.y = aa, normal.z = bevel distance
         private static void AddBevelQuad(
             VertexHelper vh, float hw, float hh,
-            Vector4 sp1, float soft, float pad, BevelEffect bv)
+            Vector4 sp1, float soft, float pad, BevelEffect bv, float aa)
         {
             Color32 bvc = new Color32(255, 255, 255, 255);
             AddQuad(vh, hw, hh, Vector2.zero, sp1,
                 new Vector4(hw, hh, soft, ET_Bevel),
                 Vector4.zero,
-                new Vector3(0, 0, bv.Distance),            // normal.z = bevelDist (blur channel)
-                new Vector4(bv.HighlightAlpha, 0,          // tangent.x = spread (highlight alpha)
-                            bv.Angle * Mathf.Deg2Rad,      // tangent.z = bevel angle
-                            bv.ShadowAlpha),               // tangent.w = shadow alpha
+                new Vector3(0, aa, bv.Distance),
+                new Vector4(bv.HighlightAlpha, 0,
+                            bv.Angle * Mathf.Deg2Rad,
+                            bv.ShadowAlpha),
                 bvc, 0, 0,
                 includeOffsetInUV: false);
         }

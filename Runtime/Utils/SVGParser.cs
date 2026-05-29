@@ -83,7 +83,17 @@ namespace VectorKit.Runtime
             if (string.IsNullOrEmpty(d)) return null;
             var path = new PathShape();
             BuildPathFromCommands(d, path);
-            return new ShapeData { Shape = path, Size = EstimatePathBounds(path) };
+            // Center path points so origin = bounding-box center
+            Vector2 center;
+            Vector2 size = EstimatePathBoundsAndCenter(path, out center);
+            for (int pi = 0; pi < path.Points.Count; pi++)
+            {
+                var pt = path.Points[pi];
+                pt.Position -= center;
+                if (pt.Type == PathPointType.Bezier) { pt.ControlPoint1 -= center; pt.ControlPoint2 -= center; }
+                path.Points[pi] = pt;
+            }
+            return new ShapeData { Shape = path, Size = size, Position = center };
         }
 
         private static ShapeData ParseRect(XElement el)
@@ -94,20 +104,24 @@ namespace VectorKit.Runtime
             float r  = Mathf.Max(rx, ry);
 
             var shape = new RectangleShape { CornerRadius = Vector4.one * r };
-            return new ShapeData { Shape = shape, Size = new Vector2(w, h), Position = new Vector2(x, -y) };
+            // Position = center of element in Unity coords (x right, y up)
+            return new ShapeData { Shape = shape, Size = new Vector2(w, h),
+                Position = new Vector2(x + w * 0.5f, -(y + h * 0.5f)) };
         }
 
         private static ShapeData ParseCircle(XElement el)
         {
             float cx = F(el, "cx"), cy = F(el, "cy"), r = F(el, "r");
-            return new ShapeData { Shape = new EllipseShape(), Size = Vector2.one * (r * 2f), Position = new Vector2(cx, -cy) };
+            return new ShapeData { Shape = new EllipseShape(), Size = Vector2.one * (r * 2f),
+                Position = new Vector2(cx, -cy) };
         }
 
         private static ShapeData ParseEllipseEl(XElement el)
         {
             float cx = F(el, "cx"), cy = F(el, "cy");
             float rx = F(el, "rx"), ry = F(el, "ry");
-            return new ShapeData { Shape = new EllipseShape(), Size = new Vector2(rx * 2f, ry * 2f), Position = new Vector2(cx, -cy) };
+            return new ShapeData { Shape = new EllipseShape(), Size = new Vector2(rx * 2f, ry * 2f),
+                Position = new Vector2(cx, -cy) };
         }
 
         private static ShapeData ParseLine(XElement el)
@@ -116,8 +130,8 @@ namespace VectorKit.Runtime
             float x2 = F(el, "x2"), y2 = F(el, "y2");
             var shape = new LineShape
             {
-                Start = new Vector2(x1, -y1),
-                End   = new Vector2(x2, -y2),
+                Start = new Vector2(x1 - (x1+x2)*0.5f, -(y1 - (y1+y2)*0.5f)),
+                End   = new Vector2(x2 - (x1+x2)*0.5f, -(y2 - (y1+y2)*0.5f)),
                 Width = 1f,
             };
             float mx = (x1 + x2) * 0.5f, my = (y1 + y2) * 0.5f;
@@ -132,7 +146,16 @@ namespace VectorKit.Runtime
             var path = new PathShape { Closed = closed };
             foreach (var p in pts)
                 path.Points.Add(new PathPoint { Position = new Vector2(p.x, -p.y), Type = PathPointType.Line });
-            return new ShapeData { Shape = path, Size = EstimatePathBounds(path) };
+            // Center points so origin = bounding-box center
+            Vector2 center;
+            Vector2 size = EstimatePathBoundsAndCenter(path, out center);
+            for (int pi = 0; pi < path.Points.Count; pi++)
+            {
+                var pt = path.Points[pi];
+                pt.Position -= center;
+                path.Points[pi] = pt;
+            }
+            return new ShapeData { Shape = path, Size = size, Position = center };
         }
 
         // ── SVG Path Commands ────────────────────────────────────────────────────
@@ -347,17 +370,18 @@ namespace VectorKit.Runtime
 
         // ── Utilities ─────────────────────────────────────────────────────────────
 
+        // ReadVec2 already converts to Unity Y-up space; store as-is.
         private static PathPoint MakeLine(Vector2 p) =>
-            new PathPoint { Position = new Vector2(p.x, -p.y), Type = PathPointType.Line };
+            new PathPoint { Position = p, Type = PathPointType.Line };
 
         private static PathPoint MakeBezier(Vector2 pos, Vector2 cp1, Vector2 cp2) =>
             new PathPoint { Position = pos, ControlPoint1 = cp1, ControlPoint2 = cp2, Type = PathPointType.Bezier };
 
         private static Vector2 ReflectCtrl(Vector2 ctrl, Vector2 cur) => cur * 2f - ctrl;
 
-        private static Vector2 EstimatePathBounds(PathShape ps)
+        private static Vector2 EstimatePathBoundsAndCenter(PathShape ps, out Vector2 center)
         {
-            if (ps.Points == null || ps.Points.Count == 0) return Vector2.one * 100f;
+            if (ps.Points == null || ps.Points.Count == 0) { center = Vector2.zero; return Vector2.one * 100f; }
             float minX = float.MaxValue, minY = float.MaxValue;
             float maxX = float.MinValue, maxY = float.MinValue;
             foreach (var pt in ps.Points)
@@ -365,7 +389,14 @@ namespace VectorKit.Runtime
                 minX = Mathf.Min(minX, pt.Position.x); maxX = Mathf.Max(maxX, pt.Position.x);
                 minY = Mathf.Min(minY, pt.Position.y); maxY = Mathf.Max(maxY, pt.Position.y);
             }
+            center = new Vector2((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
             return new Vector2(maxX - minX, maxY - minY);
+        }
+
+        private static Vector2 EstimatePathBounds(PathShape ps)
+        {
+            Vector2 center;
+            return EstimatePathBoundsAndCenter(ps, out center);
         }
 
         private static Vector2 ParseViewBox(string s)

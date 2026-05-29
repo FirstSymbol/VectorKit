@@ -402,10 +402,21 @@ Shader "VectorKit/Shape"
                 {
                     float bevelDist = blur; // blur channel reused for bevel distance
                     float2 bDir = float2(cos(i.extraData.z), sin(i.extraData.z));
-                    float diff = GetMainSDF_Opt(p_orig + noiseOff + bDir * bevelDist, halfSize, customSmooth, i.shapeParams, i)
-                               - GetMainSDF_Opt(p_orig + noiseOff - bDir * bevelDist, halfSize, customSmooth, i.shapeParams, i);
-                    float highlight = saturate( diff / (bevelDist * 2.0)) * spread;
-                    float shadow    = saturate(-diff / (bevelDist * 2.0)) * i.extraData.w;
+
+                    // 2D gradient estimation gives correct bevel for any shape including
+                    // complex SDF with smin regions (star inner rounding, boolean ops, etc.)
+                    float eps = max(1.0, min(bevelDist, 3.0));
+                    float2 ep = float2(eps, 0);
+                    float dx = GetMainSDF_Opt(p_orig + noiseOff + ep.xy, halfSize, customSmooth, i.shapeParams, i)
+                             - GetMainSDF_Opt(p_orig + noiseOff - ep.xy, halfSize, customSmooth, i.shapeParams, i);
+                    float dy = GetMainSDF_Opt(p_orig + noiseOff + ep.yx, halfSize, customSmooth, i.shapeParams, i)
+                             - GetMainSDF_Opt(p_orig + noiseOff - ep.yx, halfSize, customSmooth, i.shapeParams, i);
+                    float2 grad = float2(dx, dy) * (0.5 / eps);
+
+                    float lightness = dot(grad, bDir);
+                    float highlight = saturate( lightness) * spread;
+                    float shadow    = saturate(-lightness) * i.extraData.w;
+
                     float baseMask  = smoothstep(aa, -aa, d_orig);
                     if (baseMask <= 0.001) discard;
                     finalColor = (shadow > highlight) ? float4(0,0,0,shadow) : float4(1,1,1,highlight);

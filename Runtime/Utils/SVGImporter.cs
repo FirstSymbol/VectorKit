@@ -39,18 +39,25 @@ namespace VectorKit.Runtime
                 rt.sizeDelta = doc.ViewBox;
             }
 
+            // SVG coords origin is top-left; Unity canvas origin is center.
+            // Offset each shape position to convert from SVG space to canvas-center space.
+            var vbHalf = doc.ViewBox * 0.5f;
+
             foreach (var shape in doc.Shapes)
             {
                 string name = string.IsNullOrEmpty(shape.Id) ? "Shape" : shape.Id;
                 var go = new GameObject(name);
                 go.transform.SetParent(root.transform, false);
 
+                // shape.Position is (svgCenterX, -svgCenterY); subtract viewBox half to center
+                var unityPos = new Vector2(shape.Position.x - vbHalf.x, shape.Position.y + vbHalf.y);
+
                 if (UseUICanvas)
                 {
                     var rt    = go.AddComponent<RectTransform>();
                     rt.anchorMin = rt.anchorMax = Vector2.one * 0.5f;
                     rt.sizeDelta  = shape.Size;
-                    rt.anchoredPosition = shape.Position;
+                    rt.anchoredPosition = unityPos;
 
                     var ui = go.AddComponent<VectorShapeUI>();
                     ui.Shape   = shape.Shape;
@@ -60,8 +67,8 @@ namespace VectorKit.Runtime
                 else
                 {
                     go.transform.localPosition = new Vector3(
-                        shape.Position.x / PixelsPerUnit,
-                        shape.Position.y / PixelsPerUnit, 0);
+                        unityPos.x / PixelsPerUnit,
+                        unityPos.y / PixelsPerUnit, 0);
 
                     var ws = go.AddComponent<VectorShapeWorld>();
                     ws.Shape   = shape.Shape;

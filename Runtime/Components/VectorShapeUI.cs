@@ -158,14 +158,35 @@ namespace VectorKit.Runtime
 
         private void ApplySoftMaskToState()
         {
-            if (SoftMaskSource == null)
-            {
-                _state.HasMask = false;
-                return;
-            }
-            _state.HasMask     = true;
-            _state.MaskMatrix  = MaskWorldToLocal;
-            // mask shape kind and params are set externally by VectorSoftMaskable
+            if (SoftMaskSource == null) { _state.HasMask = false; return; }
+
+            var maskShape = SoftMaskSource.Shape;
+            if (maskShape == null) { _state.HasMask = false; return; }
+
+            _state.HasMask    = true;
+            _state.MaskMatrix = MaskWorldToLocal;
+
+            var maskRect = SoftMaskSource.GetPixelAdjustedRect();
+            float maskHW = maskRect.width  * 0.5f * maskShape.Scale.x;
+            float maskHH = maskRect.height * 0.5f * maskShape.Scale.y;
+
+            float maskKind   = (float)maskShape.Kind;
+            float maskSmooth = maskShape is RectangleShape mrs ? mrs.CornerSmoothing : 0f;
+            float feather    = Mathf.Max(0.001f, maskShape.EdgeSoftness);
+
+            _state.MaskParams = new Vector4(1f, maskKind, maskSmooth, feather);
+            _state.MaskSize   = new Vector4(maskHW * 2f, maskHH * 2f, 0f, 0f);
+            _state.MaskShape  = maskShape.PackShaderParams();
+            _state.MaskTex    = GradientAtlas.Texture;
+
+            // Solid fill only for mask; gradient fills are not yet supported
+            float opacity = SoftMaskSource.ShapeOpacity;
+            var fills = SoftMaskSource.Fills;
+            if (fills != null && fills.Count > 0 && fills[0]?.Fill is SolidFill sf)
+                opacity *= sf.Color.a;
+
+            _state.MaskFillParams = Vector4.zero;  // fillType=0 (solid), atlasRow=0 (sentinel white)
+            _state.MaskFillOffset = new Vector4(0f, 0f, opacity, 0f);
         }
 
         private void ReleaseAtlasRows()
