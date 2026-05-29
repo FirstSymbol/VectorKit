@@ -7,7 +7,7 @@ namespace VectorKit.Runtime
     // Uses adaptive subdivision: segments are split until chord deviation < tolerance.
     internal static class PathFlattener
     {
-        private const float DefaultTolerance = 0.5f;
+        private const float DefaultTolerance = 0.1f;
         private const int   MaxDepth         = 8;
 
         public static void Flatten(PathShape path, List<Vector2> output, float tolerance = DefaultTolerance)

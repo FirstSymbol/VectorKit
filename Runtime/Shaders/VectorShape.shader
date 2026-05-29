@@ -460,7 +460,7 @@ Shader "VectorKit/Shape"
                         else              mD = hard_op(mD, md2, _MaskBoolOpType[mk].x);
                     }
 
-                    float mAlpha = smoothstep(max(0.001, maskFeather), -max(0.001, maskFeather), mD);
+                    float mAlpha = smoothstep(0.0, -max(0.001, maskFeather), mD);
                     float mFillType = _MaskFillParams.x;
                     float mRow      = _MaskFillParams.w;
                     float mt        = 0.5;

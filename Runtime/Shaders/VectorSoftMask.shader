@@ -99,7 +99,7 @@ Shader "VectorKit/SoftMaskedImage"
                     }
 
                     float feather    = _MaskParams.w;
-                    float mAlpha     = smoothstep(max(0.001, feather), -max(0.001, feather), mD);
+                    float mAlpha     = smoothstep(0.0, -max(0.001, feather), mD);
                     float mFillType  = _MaskFillParams.x;
                     float mRow       = _MaskFillParams.w;
                     float mt         = 0.5;

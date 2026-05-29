@@ -176,8 +176,7 @@ namespace VectorKit.Runtime
             float rx = F(el, "rx"), ry = F(el, "ry");
             float r  = Mathf.Max(rx, ry);
 
-            var shape = new RectangleShape { CornerRadius = Vector4.one * r };
-            // Position = center of element in Unity coords (x right, y up)
+            var shape = new RectangleShape { CornerRadius = Vector4.one * r, EdgeSoftness = 0f };
             return new ShapeData { Shape = shape, Size = new Vector2(w, h),
                 Position = new Vector2(x + w * 0.5f, -(y + h * 0.5f)) };
         }
@@ -185,7 +184,7 @@ namespace VectorKit.Runtime
         private static ShapeData ParseCircle(XElement el)
         {
             float cx = F(el, "cx"), cy = F(el, "cy"), r = F(el, "r");
-            return new ShapeData { Shape = new EllipseShape(), Size = Vector2.one * (r * 2f),
+            return new ShapeData { Shape = new EllipseShape { EdgeSoftness = 0f }, Size = Vector2.one * (r * 2f),
                 Position = new Vector2(cx, -cy) };
         }
 
@@ -193,7 +192,7 @@ namespace VectorKit.Runtime
         {
             float cx = F(el, "cx"), cy = F(el, "cy");
             float rx = F(el, "rx"), ry = F(el, "ry");
-            return new ShapeData { Shape = new EllipseShape(), Size = new Vector2(rx * 2f, ry * 2f),
+            return new ShapeData { Shape = new EllipseShape { EdgeSoftness = 0f }, Size = new Vector2(rx * 2f, ry * 2f),
                 Position = new Vector2(cx, -cy) };
         }
 
@@ -206,6 +205,7 @@ namespace VectorKit.Runtime
                 Start = new Vector2(x1 - (x1+x2)*0.5f, -(y1 - (y1+y2)*0.5f)),
                 End   = new Vector2(x2 - (x1+x2)*0.5f, -(y2 - (y1+y2)*0.5f)),
                 Width = 1f,
+                EdgeSoftness = 0f,
             };
             float mx = (x1 + x2) * 0.5f, my = (y1 + y2) * 0.5f;
             float bw = Mathf.Abs(x2 - x1) + 4f, bh = Mathf.Abs(y2 - y1) + 4f;
@@ -216,7 +216,7 @@ namespace VectorKit.Runtime
         {
             var pts = ParsePointList(el.Attribute("points")?.Value);
             if (pts == null || pts.Count < 2) return null;
-            var path = new PathShape { Closed = closed };
+            var path = new PathShape { Closed = closed, EdgeSoftness = 0f };
             foreach (var p in pts)
                 path.Points.Add(new PathPoint { Position = new Vector2(p.x, -p.y), Type = PathPointType.Line });
             // Center points so origin = bounding-box center
@@ -260,7 +260,7 @@ namespace VectorKit.Runtime
                     {
                         var p = ReadVec2(tokens, ref i, cur, cmd == 'm');
                         if (path != null && path.Points.Count > 0) result.Add(path);
-                        path = new PathShape();
+                        path = new PathShape { EdgeSoftness = 0f };
                         path.Points.Add(MakeLine(p));
                         cur = start = p; lastCtrl = cur;
                         cmd = cmd == 'm' ? 'l' : 'L';
@@ -523,14 +523,24 @@ namespace VectorKit.Runtime
             if (ps.Points == null || ps.Points.Count == 0) { center = Vector2.zero; return Vector2.one * 100f; }
             float minX = float.MaxValue, minY = float.MaxValue;
             float maxX = float.MinValue, maxY = float.MinValue;
-            foreach (var pt in ps.Points)
+            int count = ps.Points.Count;
+            for (int i = 0; i < count; i++)
             {
+                var pt = ps.Points[i];
                 Expand(ref minX, ref maxX, ref minY, ref maxY, pt.Position);
+                // Include IN handle for bezier endpoints
                 if (pt.Type == PathPointType.Bezier)
-                {
                     Expand(ref minX, ref maxX, ref minY, ref maxY, pt.ControlPoint1);
+                // Include OUT handle whenever the next segment is a bezier (point may be Line-typed start)
+                bool nextIsBezier = (i + 1 < count && ps.Points[i + 1].Type == PathPointType.Bezier);
+                if (pt.Type == PathPointType.Bezier || nextIsBezier)
                     Expand(ref minX, ref maxX, ref minY, ref maxY, pt.ControlPoint2);
-                }
+            }
+            // Closed path: include handles for the wrap-around segment (last → first)
+            if (ps.Closed && count >= 2 && ps.Points[0].Type == PathPointType.Bezier)
+            {
+                Expand(ref minX, ref maxX, ref minY, ref maxY, ps.Points[count - 1].ControlPoint2);
+                Expand(ref minX, ref maxX, ref minY, ref maxY, ps.Points[0].ControlPoint1);
             }
             center = new Vector2((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
             return new Vector2(maxX - minX, maxY - minY);

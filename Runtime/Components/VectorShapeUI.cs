@@ -107,6 +107,11 @@ namespace VectorKit.Runtime
                     _pooledMat       = VectorMaterialManager.GetMaterial(_state, baseMat);
                 }
             }
+            else if (_pooledMat == null)
+            {
+                // Material was lost (e.g. after domain reload) without a state rebuild — force one next frame.
+                SetVerticesDirty();
+            }
 
             if (_pooledMat != null)
                 canvasRenderer.SetMaterial(_pooledMat, GradientAtlas.Texture);
