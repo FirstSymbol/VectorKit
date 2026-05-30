@@ -71,10 +71,21 @@ namespace VectorKit.Runtime
             if (_mesh == null) return;
             ReleaseAtlasRows();
 
-            SDFMeshBuilder.RebuildMesh(
-                _mesh, Size, Tint,
-                Shape, Fills, Strokes, Effects,
-                _state, _atlasRows);
+            if (Shape is PathShape tessPs && PathFlattener.HasSubPaths(tessPs))
+            {
+                // Bypass VertexHelper to avoid its 65 000-vertex ceiling.
+                SDFMeshBuilder.PopulateLargeMesh(_mesh, Size, Tint, tessPs, Fills);
+                _state.Clear();
+                _state.ShapeKind = ShapeKind.Rectangle;
+                _state.AtlasTex  = GradientAtlas.Texture;
+            }
+            else
+            {
+                SDFMeshBuilder.RebuildMesh(
+                    _mesh, Size, Tint,
+                    Shape, Fills, Strokes, Effects,
+                    _state, _atlasRows);
+            }
 
             ReleaseMaterial();
             var baseMat = DefaultMaterial;

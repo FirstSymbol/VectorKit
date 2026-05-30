@@ -267,6 +267,21 @@ Shader "VectorKit/Shape"
                 float  customSmooth  = i.baseData.z;
                 float  effectType    = i.baseData.w;
 
+                // Tessellated polygon fill: vertex colour is already premultiplied,
+                // skip all SDF evaluation and return directly.
+                if (effectType > 5.5 && effectType < 6.5)
+                {
+                    fixed4 tc = i.color;
+                    if (tc.a <= 0.001) discard;
+#ifdef UNITY_UI_CLIP_RECT
+                    tc *= UnityGet2DClipping(i.worldPosition.xy, _ClipRect);
+#endif
+#ifdef UNITY_UI_ALPHACLIP
+                    clip(tc.a - 0.001);
+#endif
+                    return tc;
+                }
+
                 float  blur           = i.effectData.x;
                 float  aa             = i.effectData.y;
                 float  internalPadding = i.effectData.z;

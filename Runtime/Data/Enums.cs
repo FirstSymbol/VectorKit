@@ -71,6 +71,10 @@ namespace VectorKit.Runtime
     {
         Line   = 0,
         Bezier = 1,
+        // Sub-path separator inserted by SVGParser when a <path> contains multiple M commands.
+        // Position = first point of the NEXT sub-path (used by PathFlattener to close the previous one).
+        // ControlPoint1.x = 1 if the previous sub-path ended with Z (closed), 0 if open.
+        Move   = 2,
     }
 
     public enum ImageFitMode

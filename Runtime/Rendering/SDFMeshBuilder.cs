@@ -24,11 +24,14 @@ namespace VectorKit.Runtime
     // Draw order: DropShadow → OuterGlow → Fills → InnerShadow → InnerGlow → Strokes → Bevel
     internal static class SDFMeshBuilder
     {
-        private const int ET_Fill   = 0;
-        private const int ET_Shadow = 1;
-        private const int ET_Stroke = 2;
-        private const int ET_Inner  = 3;
-        private const int ET_Bevel  = 5;
+        private const int ET_Fill       = 0;
+        private const int ET_Shadow     = 1;
+        private const int ET_Stroke     = 2;
+        private const int ET_Inner      = 3;
+        private const int ET_Bevel      = 5;
+        // Tessellated polygon fill: shader returns premultiplied vertex color directly,
+        // bypassing SDF evaluation. Used for complex merged-sub-path shapes from SVG import.
+        private const int ET_Tessellated = 6;
 
         // Canvas (uGUI) path
         public static void Populate(
@@ -73,20 +76,29 @@ namespace VectorKit.Runtime
 
             if (shape is PathShape ps)
             {
-                state.ShapeKind = ShapeKind.Path;
-                var pts = new List<Vector2>();
-                PathFlattener.Flatten(ps, pts);
-
-                if (ps.NativeHalfSize.x > 0.001f && ps.NativeHalfSize.y > 0.001f)
+                if (PathFlattener.HasSubPaths(ps))
                 {
-                    float sx = halfSize.x / ps.NativeHalfSize.x;
-                    float sy = halfSize.y / ps.NativeHalfSize.y;
-                    for (int j = 0; j < pts.Count; j++)
-                        pts[j] = new Vector2(pts[j].x * sx, pts[j].y * sy);
+                    // Merged multi-sub-path: rendered via tessellation in GenerateGeometry.
+                    // Use Rectangle kind so no path arrays are allocated.
+                    state.ShapeKind = ShapeKind.Rectangle;
                 }
+                else
+                {
+                    state.ShapeKind = ShapeKind.Path;
+                    var pts = new List<Vector2>();
+                    PathFlattener.Flatten(ps, pts);
 
-                if (state.PathData == null) state.PathData = new Vector4[256];
-                state.PathPointCount = PathFlattener.PackIntoShaderArray(pts, state.PathData);
+                    if (ps.NativeHalfSize.x > 0.001f && ps.NativeHalfSize.y > 0.001f)
+                    {
+                        float sx = halfSize.x / ps.NativeHalfSize.x;
+                        float sy = halfSize.y / ps.NativeHalfSize.y;
+                        for (int j = 0; j < pts.Count; j++)
+                            pts[j] = new Vector2(pts[j].x * sx, pts[j].y * sy);
+                    }
+
+                    if (state.PathData == null) state.PathData = new Vector4[256];
+                    state.PathPointCount = PathFlattener.PackIntoShaderArray(pts, state.PathData);
+                }
             }
             else if (shape is BooleanShape bs)
             {
@@ -146,6 +158,13 @@ namespace VectorKit.Runtime
             IList<StrokeLayer> strokes, IList<VectorEffect> effects,
             List<int> outAtlasRows)
         {
+            // Merged multi-sub-path shapes use polygon tessellation instead of SDF quads.
+            if (shape is PathShape tessPs && PathFlattener.HasSubPaths(tessPs))
+            {
+                GenerateTessellated(vh, hw, hh, tint, tessPs, fills);
+                return;
+            }
+
             Vector4 sp1 = shape.PackShaderParams();
             float   pad = shape.InternalPadding;
 
@@ -428,5 +447,171 @@ namespace VectorKit.Runtime
             ImageFill          imf => new Vector4(atlasRow, (int)FillKind.Image,           (float)imf.FitMode, 1),
             _                      => Vector4.zero,
         };
+
+        // ── Tessellated rendering (merged multi-sub-path PathShapes) ─────────────
+
+        // Populates a UInt32-indexed Mesh for tessellated multi-sub-path shapes.
+        // Used by VectorShapeWorld which owns its own Mesh and is not constrained
+        // by UGUI's VertexHelper 65 000-vertex ceiling.
+        // The shader's ET_Tessellated early-return path handles rendering, so only
+        // positions, colors, and UV channel 2 (w = effectType) need to be set.
+        public static void PopulateLargeMesh(
+            Mesh mesh, Vector2 size, Color tint,
+            PathShape shape, IList<FillLayer> fills)
+        {
+            mesh.Clear();
+            mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+
+            if (fills == null || fills.Count == 0) return;
+
+            float hw = size.x * 0.5f * shape.Scale.x;
+            float hh = size.y * 0.5f * shape.Scale.y;
+            float sx = (shape.NativeHalfSize.x > 0.001f) ? hw / shape.NativeHalfSize.x : 1f;
+            float sy = (shape.NativeHalfSize.y > 0.001f) ? hh / shape.NativeHalfSize.y : 1f;
+
+            var subPaths = PathFlattener.FlattenSubPaths(shape);
+            if (subPaths.Count == 0) return;
+
+            for (int s = 0; s < subPaths.Count; s++)
+            {
+                var sp = subPaths[s];
+                for (int j = 0; j < sp.Count; j++)
+                    sp[j] = new Vector2(sp[j].x * sx, sp[j].y * sy);
+            }
+
+            var tris = VectorTessellator.Tessellate(subPaths);
+            if (tris.Count < 3) return;
+
+            int count = (tris.Count / 3) * 3; // ensure multiple of 3
+
+            int fillCount = 0;
+            foreach (var f in fills)
+                if (f != null && f.Enabled && f.Fill != null) fillCount++;
+            if (fillCount == 0) return;
+
+            int total     = count * fillCount;
+            var positions = new Vector3[total];
+            var colors32  = new Color32[total];
+            var uv2Data   = new Vector4[total]; // TEXCOORD2.w = ET_Tessellated
+            var indices   = new int[total];
+
+            var baseUV2 = new Vector4(0f, 0f, 0f, ET_Tessellated);
+            int vi = 0;
+
+            foreach (var f in fills)
+            {
+                if (f == null || !f.Enabled || f.Fill == null) continue;
+                Color32 col = PremultipliedVertColor(f.Fill, tint, f.Opacity);
+                for (int i = 0; i < count; i++)
+                {
+                    positions[vi] = new Vector3(tris[i].x, tris[i].y, 0f);
+                    colors32[vi]  = col;
+                    uv2Data[vi]   = baseUV2;
+                    indices[vi]   = vi;
+                    vi++;
+                }
+            }
+
+            mesh.vertices = positions;
+            mesh.colors32 = colors32;
+            mesh.SetUVs(2, uv2Data);
+            mesh.SetIndices(indices, MeshTopology.Triangles, 0, false);
+            mesh.RecalculateBounds();
+        }
+
+        // Limitation (v1): only solid-color fills fully supported; gradient fills
+        // use tint color as an approximation.
+        private static void GenerateTessellated(
+            VertexHelper vh, float hw, float hh, Color tint,
+            PathShape shape, IList<FillLayer> fills)
+        {
+            if (fills == null || fills.Count == 0) return;
+
+            float sx = (shape.NativeHalfSize.x > 0.001f) ? hw / shape.NativeHalfSize.x : 1f;
+            float sy = (shape.NativeHalfSize.y > 0.001f) ? hh / shape.NativeHalfSize.y : 1f;
+
+            // Scale tessellation tolerance up for paths with many sub-paths so the total
+            // mesh-vertex count stays under UGUI's 65 000-vertex ceiling (VertexHelper uses
+            // a 16-bit index buffer).  Heuristic: at tolerance=0.5 a typical bezier sub-path
+            // produces ~150 mesh vertices after tessellation.
+            const int   VertBudget = 58000; // leave headroom for multiple fill layers
+            const float BaseVerts  = 150f;
+            int   n         = CountSubPaths(shape);
+            float tolerance = 0.5f * Mathf.Max(1f, n * BaseVerts / VertBudget);
+
+            var subPaths = PathFlattener.FlattenSubPaths(shape, tolerance);
+            if (subPaths.Count == 0) return;
+
+            for (int s = 0; s < subPaths.Count; s++)
+            {
+                var sp = subPaths[s];
+                for (int j = 0; j < sp.Count; j++)
+                    sp[j] = new Vector2(sp[j].x * sx, sp[j].y * sy);
+            }
+
+            var triangles = VectorTessellator.Tessellate(subPaths);
+            if (triangles.Count < 3) return;
+
+            // Hard cap as a last-resort safety net; should not trigger with correct tolerance.
+            int count = Mathf.Min((triangles.Count / 3) * 3, VertBudget);
+
+            foreach (var f in fills)
+            {
+                if (f == null || !f.Enabled || f.Fill == null) continue;
+                Color32 col = PremultipliedVertColor(f.Fill, tint, f.Opacity);
+                AddTessellatedFill(vh, triangles, count, col);
+            }
+        }
+
+        private static int CountSubPaths(PathShape shape)
+        {
+            if (shape?.Points == null) return 0;
+            int n = 1;
+            foreach (var pt in shape.Points)
+                if (pt.Type == PathPointType.Move) n++;
+            return n;
+        }
+
+        private static void AddTessellatedFill(VertexHelper vh, List<Vector2> tris, int count, Color32 color)
+        {
+            int bi = vh.currentVertCount;
+            var v  = new UIVertex
+            {
+                color   = color,
+                uv1     = Vector4.zero,
+                uv2     = new Vector4(0f, 0f, 0f, ET_Tessellated),
+                uv3     = Vector4.zero,
+                normal  = Vector3.zero,
+                tangent = Vector4.zero,
+            };
+
+            for (int i = 0; i < count; i++)
+            {
+                v.position = new Vector3(tris[i].x, tris[i].y, 0f);
+                v.uv0 = new Vector4(tris[i].x, tris[i].y, 0f, 0f);
+                vh.AddVert(v);
+            }
+
+            int triCount = count / 3;
+            for (int t = 0; t < triCount; t++)
+                vh.AddTriangle(bi + t * 3, bi + t * 3 + 1, bi + t * 3 + 2);
+        }
+
+        // Returns premultiplied-alpha vertex color for tessellated fills.
+        private static Color32 PremultipliedVertColor(FillDefinition fill, Color tint, float opacity)
+        {
+            Color c;
+            if (fill is SolidFill sf)
+                c = new Color(sf.Color.r * tint.r, sf.Color.g * tint.g, sf.Color.b * tint.b,
+                              sf.Color.a * tint.a * opacity);
+            else
+                c = new Color(tint.r, tint.g, tint.b, tint.a * opacity);
+            // Premultiply
+            return new Color32(
+                (byte)(Mathf.Clamp01(c.r * c.a) * 255f),
+                (byte)(Mathf.Clamp01(c.g * c.a) * 255f),
+                (byte)(Mathf.Clamp01(c.b * c.a) * 255f),
+                (byte)(Mathf.Clamp01(c.a)        * 255f));
+        }
     }
 }

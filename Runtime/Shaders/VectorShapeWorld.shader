@@ -159,6 +159,14 @@ Shader "VectorKit/ShapeWorld"
                 if (noiseAmt > 0.001) { float nv = vk_noise(p_orig*noiseScale); noiseOff = (nv*2-1)*noiseAmt; }
 #endif
 
+                // Tessellated polygon fill: vertex colour already premultiplied; skip SDF.
+                if (effectType > 5.5 && effectType < 6.5)
+                {
+                    fixed4 tc = i.color;
+                    if (tc.a <= 0.001) discard;
+                    return tc;
+                }
+
                 bool needShadow = (effectType==1||effectType==3), needOrig = (effectType!=1);
                 float d_orig=0, d=0;
                 if (needOrig)   d_orig = GetMainSDF_Opt(p_orig+noiseOff, halfSize, smoothing, i.shapeParams, i);

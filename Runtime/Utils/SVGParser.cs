@@ -146,26 +146,106 @@ namespace VectorKit.Runtime
 
         // ── Shape Parsers ────────────────────────────────────────────────────────
 
-        // Returns one ShapeData per SVG sub-path (each M command starts a new sub-path).
+        // Returns ONE ShapeData for the entire <path> element.
+        // Multiple M-command sub-paths are merged into a single PathShape using Move markers
+        // so SVGImporter creates ONE GameObject per <path> element instead of one per sub-path.
         private static IEnumerable<ShapeData> ParsePathShapes(XElement el)
         {
             var d = el.Attribute("d")?.Value;
             if (string.IsNullOrEmpty(d)) yield break;
 
-            foreach (var path in BuildSubPaths(d))
+            var subPaths = BuildSubPaths(d);
+            if (subPaths.Count == 0) yield break;
+
+            if (subPaths.Count == 1)
             {
-                if (path.Points.Count == 0) continue;
+                var path = subPaths[0];
+                if (path.Points.Count == 0) yield break;
                 Vector2 center;
                 Vector2 size = EstimatePathBoundsAndCenter(path, out center);
-                for (int pi = 0; pi < path.Points.Count; pi++)
-                {
-                    var pt = path.Points[pi];
-                    pt.Position      -= center;
-                    pt.ControlPoint1 -= center;
-                    pt.ControlPoint2 -= center;
-                    path.Points[pi] = pt;
-                }
+                CenterPathPoints(path, center);
                 yield return new ShapeData { Shape = path, Size = size, Position = center };
+            }
+            else
+            {
+                yield return MergeSubPaths(subPaths);
+            }
+        }
+
+        // Merges multiple sub-paths into ONE PathShape with Move-marker separators.
+        private static ShapeData MergeSubPaths(List<PathShape> subPaths)
+        {
+            // Compute global analytic bounds over all sub-paths
+            float minX = float.MaxValue, maxX = float.MinValue;
+            float minY = float.MaxValue, maxY = float.MinValue;
+            foreach (var sp in subPaths)
+            {
+                int count = sp.Points.Count;
+                for (int i = 0; i < count; i++)
+                {
+                    var pt = sp.Points[i];
+                    Expand(ref minX, ref maxX, ref minY, ref maxY, pt.Position);
+                    int nextIdx = i + 1;
+                    if (nextIdx >= count) { if (sp.Closed && count >= 2) nextIdx = 0; else continue; }
+                    var next = sp.Points[nextIdx];
+                    if (next.Type == PathPointType.Bezier)
+                        ExpandCubicBezierExtrema(ref minX, ref maxX, ref minY, ref maxY,
+                            pt.Position, pt.ControlPoint2, next.ControlPoint1, next.Position);
+                }
+            }
+
+            if (minX > maxX) { minX = 0f; maxX = 100f; }
+            if (minY > maxY) { minY = 0f; maxY = 100f; }
+
+            var center = new Vector2((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
+            var size   = new Vector2(maxX - minX, maxY - minY);
+
+            // Build merged PathShape: sub-paths separated by Move markers.
+            var merged = new PathShape { Closed = true, Thickness = 0f, EdgeSoftness = 0f };
+            bool prevClosed = false;
+            for (int s = 0; s < subPaths.Count; s++)
+            {
+                var sp = subPaths[s];
+                if (sp.Points.Count == 0) continue;
+
+                if (s > 0)
+                {
+                    // Move marker: Position = first point of this sub-path (so the flattener
+                    // knows where the previous sub-path should "close" to when prevClosed=true).
+                    // ControlPoint1.x encodes whether the PREVIOUS sub-path was closed.
+                    merged.Points.Add(new PathPoint
+                    {
+                        Position      = sp.Points[0].Position - center,
+                        ControlPoint1 = new Vector2(prevClosed ? 1f : 0f, 0f),
+                        Type          = PathPointType.Move,
+                    });
+                }
+
+                prevClosed = sp.Closed;
+                foreach (var pt in sp.Points)
+                {
+                    merged.Points.Add(new PathPoint
+                    {
+                        Position      = pt.Position      - center,
+                        ControlPoint1 = pt.ControlPoint1 - center,
+                        ControlPoint2 = pt.ControlPoint2 - center,
+                        Type          = pt.Type,
+                    });
+                }
+            }
+
+            return new ShapeData { Shape = merged, Size = size, Position = center };
+        }
+
+        private static void CenterPathPoints(PathShape path, Vector2 center)
+        {
+            for (int pi = 0; pi < path.Points.Count; pi++)
+            {
+                var pt = path.Points[pi];
+                pt.Position      -= center;
+                pt.ControlPoint1 -= center;
+                pt.ControlPoint2 -= center;
+                path.Points[pi] = pt;
             }
         }
 
